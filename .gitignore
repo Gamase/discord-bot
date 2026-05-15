@@ -1,0 +1,43 @@
+# Secretos
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Archivos temporales de TTS
+*.wav
+*.tmp
+tmp/
+temp/
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+.env/
+ENV/
+.virtualenv/
+
+# Distribución / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
