@@ -32,9 +32,9 @@ class Voz(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @commands.command(name='hablar')
+    @commands.command(name='h')
     async def hablar(self, ctx: commands.Context, *, texto: str):
-        """Lee un texto en el canal de voz con la voz Sabina. Uso: !hablar [texto]"""
+        """Lee un texto en el canal de voz con la voz Sabina. Uso: !h [texto]"""
         if not ctx.author.voice:
             return await ctx.send("❌ Debes estar en un canal de voz.")
 

@@ -9,6 +9,13 @@ load_dotenv()
 
 MODEL = "llama-3.3-70b-versatile"
 MAX_HISTORY = 10
+SYSTEM_PROMPT = {
+    "role": "system",
+    "content": (
+        "Eres un asistente en un servidor de Discord. "
+        "Responde siempre en español, de forma clara y concisa."
+    ),
+}
 
 
 class IA(commands.Cog):
@@ -22,21 +29,26 @@ class IA(commands.Cog):
         """Pregunta algo a la IA. Uso: !ia <pregunta>"""
         historial = self.historial[ctx.author.id]
         historial.append({"role": "user", "content": pregunta})
-        if len(historial) > MAX_HISTORY:
-            del historial[:-MAX_HISTORY]
+        if len(historial) > MAX_HISTORY * 2:
+            del historial[:-MAX_HISTORY * 2]
 
         async with ctx.typing():
             try:
                 response = await self.client.chat.completions.create(
                     model=MODEL,
-                    messages=historial,
+                    messages=[SYSTEM_PROMPT] + historial,
                 )
-                respuesta = response.choices[0].message.content
+                respuesta = response.choices[0].message.content or "No obtuve respuesta, intenta de nuevo."
             except Exception as e:
                 return await ctx.send(f"❌ Error con la IA: {e}")
 
         historial.append({"role": "assistant", "content": respuesta})
-        await ctx.send(respuesta)
+
+        if len(respuesta) <= 2000:
+            await ctx.send(respuesta)
+        else:
+            for i in range(0, len(respuesta), 2000):
+                await ctx.send(respuesta[i:i + 2000])
 
 
 async def setup(bot: commands.Bot):
