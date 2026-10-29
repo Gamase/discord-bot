@@ -18,6 +18,7 @@ temp/
 *.log
 heartbeat
 .aviso_last
+bot.db
 
 # Entornos virtuales
 venv/
