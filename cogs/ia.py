@@ -7,7 +7,7 @@ from groq import AsyncGroq
 
 load_dotenv()
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 MAX_HISTORY = 10
 SYSTEM_PROMPT = {
     "role": "system",

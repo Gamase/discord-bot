@@ -3,19 +3,42 @@ import os
 import tempfile
 
 import discord
+import edge_tts
 import pyttsx3
 from discord.ext import commands
 
-VOICE_NAME = 'Microsoft Sabina Desktop'
+VOICE = os.getenv('TTS_VOICE', 'es-MX-DaliaNeural')
+
+VOICE_NAMES = (
+    'Microsoft Sabina Desktop',
+    'Spanish (Spain)',
+    'Spanish (Latin America)',
+)
+
+
+async def _tts_edge(texto: str) -> str:
+    """Genera un MP3 temporal con Edge TTS (voz neuronal)."""
+    tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
+    tmp.close()
+    try:
+        await edge_tts.Communicate(texto, VOICE).save(tmp.name)
+        if os.path.getsize(tmp.name) == 0:
+            raise RuntimeError('Edge TTS devolvió un archivo vacío')
+        return tmp.name
+    except Exception:
+        os.unlink(tmp.name)
+        raise
 
 
 def _tts_sync(texto: str) -> str:
     """Genera WAV temporal con pyttsx3 (bloqueante — llamar en executor)."""
     engine = pyttsx3.init()
     try:
-        for voice in engine.getProperty('voices'):
-            if VOICE_NAME in voice.name:
-                engine.setProperty('voice', voice.id)
+        voices = engine.getProperty('voices')
+        for nombre in VOICE_NAMES:
+            voz = next((v for v in voices if nombre in v.name), None)
+            if voz is not None:
+                engine.setProperty('voice', voz.id)
                 break
 
         tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
@@ -34,7 +57,7 @@ class Voz(commands.Cog):
 
     @commands.command(name='h')
     async def hablar(self, ctx: commands.Context, *, texto: str):
-        """Lee un texto en el canal de voz con la voz Sabina. Uso: !h [texto]"""
+        """Lee un texto en el canal de voz con voz en español. Uso: !h [texto]"""
         if not ctx.author.voice:
             return await ctx.send("❌ Debes estar en un canal de voz.")
 
@@ -49,8 +72,12 @@ class Voz(commands.Cog):
             vc = await channel.connect()
 
         try:
-            loop = asyncio.get_event_loop()
-            tmp_path = await loop.run_in_executor(None, _tts_sync, texto)
+            try:
+                tmp_path = await _tts_edge(texto)
+            except Exception as e:
+                print(f'⚠️ Edge TTS falló ({e}); usando eSpeak de respaldo')
+                loop = asyncio.get_event_loop()
+                tmp_path = await loop.run_in_executor(None, _tts_sync, texto)
         except Exception as e:
             return await ctx.send(f"❌ Error generando TTS: {e}")
 
