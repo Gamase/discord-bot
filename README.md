@@ -1,129 +1,128 @@
 # Discord Bot
 
-Multifunctional Discord bot with YouTube music playback, playlists, live playback panel, TTS, reminders, and AI chat.
+Bot de Discord multifuncional con reproducción de música de YouTube, panel de control con botones, TTS, recordatorios e IA.
 
 ## Features
 
-- **Music** — YouTube playback with search menu, queue management, loop modes, radio-based autoplay, seek, live panel and volume control.
-- **Playlists & history** — Save/load playlists and keep the last 50 played tracks per server (SQLite).
-- **Lyrics** — Fetch lyrics for the current song or any `Artist - Song`.
-- **DJ permissions** — Restrict playback controls to admins, a DJ role or members in the bot's voice channel.
-- **Voice (TTS)** — Read text aloud using Edge TTS (es-MX voice) with eSpeak fallback.
-- **Reminders** — Automatic monthly payment reminder plus flexible per-user reminders (`!recordar 10m ...`).
-- **AI** — Chat with Groq (default `openai/gpt-oss-120b`) with per-user conversation history.
-- **Stability** — Voice auto-reconnect, heartbeat + watchdog, startup/shutdown alerts and yt-dlp auto-update.
+- **Music** — Reproducción de YouTube con menú de búsqueda, gestión de cola, modos de loop, autoplay por radio y panel en vivo con botones.
+- **Playlists & history** — Guarda/carga playlists desde el panel de botones y mantiene las últimas 50 canciones reproducidas por servidor (SQLite).
+- **DJ permissions** — Restringe los controles de reproducción a admins, un rol DJ o miembros en el canal de voz del bot.
+- **Voice (TTS)** — Lee texto en voz alta usando Edge TTS (voz es-MX) con fallback a eSpeak.
+- **Reminders** — Recordatorio mensual de pago automático y recordatorios flexibles por usuario (`!recordar 10m ...`).
+- **AI** — Chat con Groq (modelo configurable) con historial de conversación por usuario y cooldown de 3 usos/60s.
+- **Stability** — Reconexión automática de voz, heartbeat + watchdog, alertas de inicio/caída.
+
+## Panel de reproducción
+
+El panel se actualiza cada 5 segundos con barra de progreso y dos filas de botones:
+
+| Fila 1 | Acción |
+|--------|--------|
+| ⏯️ | Pausa / Reanuda |
+| ⏭️ | Salta a la siguiente canción |
+| 🔁 | Cicla el modo loop: desactivado → repetir canción → repetir cola |
+| 📻 | Activa / desactiva autoplay (canciones relacionadas) |
+| ⏹️ | Detiene la música y desconecta el bot |
+
+| Fila 2 | Acción |
+|--------|--------|
+| 📋 | Muestra la cola actual (efímero) |
+| 🔀 | Mezcla la cola aleatoriamente |
+| 🧹 | Limpia la cola (mantiene la canción actual) |
+| 💾 | Abre modal para guardar la cola como playlist |
+| 📂 | Abre el gestor de playlists (cargar / borrar) |
+
+Cada botón muestra un mensaje efímero confirmando la acción realizada.
 
 ## Commands
 
 ### Music
-| Command | Aliases | Description |
-|---------|---------|-------------|
-| `!join` | `!conectar` | Connect the bot to your voice channel |
-| `!play <search/URL>` | `!p`, `!reproducir` | Search (5 results menu), play a URL or load a YouTube / YT Music playlist (up to 100 tracks) |
-| `!pause` | `!pausar` | Pause playback |
-| `!resume` | `!reanudar` | Resume playback |
-| `!skip` | `!s`, `!saltar` | Skip to the next song |
-| `!seek <time>` | `!adelantar` | Seek to `90`, `1:30` or `1:02:03` |
-| `!stop` | `!detener` | Stop, clear the queue and disconnect |
-| `!queue` | `!q`, `!cola` | Show the playback queue |
-| `!np` | `!nowplaying`, `!sonando` | Show the current song with progress |
-| `!loop [off\|one\|all]` | `!bucle`, `!repetir` | Cycle or set the loop mode |
-| `!autoplay [on\|off]` | `!radio`, `!automatico` | Toggle YouTube radio-based autoplay (related songs) |
-| `!volumen <0-100>` | `!vol` | Adjust the volume |
-| `!remove <n>` | `!quitar`, `!rm` | Remove a track from the queue |
-| `!move <from> <to>` | `!mover`, `!mv` | Move a track in the queue |
-| `!clear` | `!limpiar`, `!vaciar` | Clear the queue (keeps current song) |
-| `!shuffle` | `!mezclar`, `!aleatorio` | Shuffle the queue |
-| `!lyrics [artist - song]` | `!letra` | Show lyrics (current song if omitted) |
-
-The live panel updates every 5 seconds with a progress bar and buttons for pause/resume, skip, queue (ephemeral), loop and stop. A fresh panel is posted at the start of every song.
-
-### Playlists
-| Command | Aliases | Description |
-|---------|---------|-------------|
-| `!playlist save <name>` | `!pl guardar` | Save current song + queue |
-| `!playlist load <name>` | `!pl cargar` | Load and play a playlist |
-| `!playlist list` | `!pl lista` | List saved playlists |
-| `!playlist show <name>` | `!pl ver` | Show playlist tracks |
-| `!playlist add <name> [song]` | `!pl agregar` | Append current queue or one search result |
-| `!playlist remove <name> <n>` | `!pl quitar` | Remove a track from a playlist |
-| `!playlist delete <name>` | `!pl borrar` | Delete a playlist |
+| Comando | Alias | Descripción |
+|---------|-------|-------------|
+| `!join` | `!conectar` | Conecta el bot a tu canal de voz |
+| `!play <búsqueda/URL>` | `!p`, `!reproducir` | Busca (menú de 5 resultados), reproduce una URL o carga una playlist de YouTube/YT Music (hasta 100 pistas) |
+| `!pause` | `!pausar` | Pausa la reproducción |
+| `!resume` | `!reanudar` | Reanuda la reproducción |
+| `!skip` | `!s`, `!saltar` | Salta a la siguiente canción |
+| `!stop` | `!detener` | Detiene, limpia la cola y desconecta |
+| `!queue` | `!q`, `!cola` | Muestra la cola de reproducción |
+| `!np` | `!nowplaying`, `!sonando` | Muestra la canción actual con progreso |
+| `!loop [off\|one\|all]` | `!bucle`, `!repetir` | Cambia el modo de loop |
+| `!autoplay [on\|off]` | `!radio`, `!automatico` | Activa/desactiva el autoplay |
+| `!remove <n>` | `!quitar`, `!rm` | Quita una pista de la cola |
+| `!move <de> <a>` | `!mover`, `!mv` | Mueve una pista en la cola |
+| `!clear` | `!limpiar`, `!vaciar` | Limpia la cola (mantiene la actual) |
+| `!shuffle` | `!mezclar`, `!aleatorio` | Mezcla la cola aleatoriamente |
 
 ### History
-| Command | Aliases | Description |
-|---------|---------|-------------|
-| `!historial` | `!recientes`, `!history` | Show the last played tracks |
-| `!last` | `!ultima`, `!última` | Replay the last track |
+| Comando | Alias | Descripción |
+|---------|-------|-------------|
+| `!historial` | `!recientes`, `!history` | Muestra las últimas canciones reproducidas |
+| `!last` | `!ultima`, `!última` | Vuelve a reproducir la última canción |
 
 ### Voice (TTS)
-| Command | Description |
+| Comando | Descripción |
 |---------|-------------|
-| `!h <text>` | Read text aloud in the voice channel |
+| `!h <texto>` | Lee el texto en voz alta en el canal de voz |
 
 ### Reminders
-| Command | Aliases | Description |
-|---------|---------|-------------|
-| `!recordar <time> <text>` | `!recuerdame`, `!recuérdame` | Create a reminder (e.g. `10m`, `2h`, `1d`) |
-| `!recordatorios` | `!misrecordatorios` | List your pending reminders |
-| `!olvidar <id>` | `!borrarrecordatorio` | Delete a reminder |
-| `!forzar_recordatorio` | — | Send the monthly payment reminder now |
-| `!estado_recordatorio` | — | Show the automatic reminder status |
-| `!prueba` | — | Verify the bot is working |
+| Comando | Alias | Descripción |
+|---------|-------|-------------|
+| `!recordar <tiempo> <texto>` | `!recuerdame` | Crea un recordatorio (ej. `10m`, `2h`, `1d`) |
+| `!recordatorios` | `!misrecordatorios` | Lista tus recordatorios pendientes |
+| `!olvidar <id>` | `!borrarrecordatorio` | Elimina un recordatorio |
+| `!forzar_recordatorio` | — | Envía el recordatorio mensual manualmente (solo dueño del bot) |
+| `!estado_recordatorio` | — | Muestra el estado del recordatorio automático |
+| `!prueba` | — | Verifica que el bot funciona |
 
 ### AI
-| Command | Description |
+| Comando | Descripción |
 |---------|-------------|
-| `!ia <question>` | Ask the AI (keeps history per user) |
+| `!ia <pregunta>` | Pregunta a la IA (mantiene historial por usuario, cooldown 3/60s) |
 
 ### General
-| Command | Aliases | Description |
-|---------|---------|-------------|
-| `!help [command]` | `!ayuda`, `!comandos` | Help menu by category or command detail |
-| `!ping` | — | Show latency |
-| `!uptime` | `!encendido` | Show bot uptime |
-| `!stats` | `!info` | Servers, users, latency and uptime |
+| Comando | Alias | Descripción |
+|---------|-------|-------------|
+| `!help [comando]` | `!ayuda`, `!comandos` | Menú de ayuda por categoría o detalle de un comando |
+| `!ping` | — | Muestra la latencia |
+| `!uptime` | `!encendido` | Muestra el tiempo de actividad |
+| `!stats` | `!info` | Servidores, usuarios, latencia y uptime |
 
 ## DJ permissions
 
-Playback controls (`pause`, `resume`, `skip`, `stop`, `loop`, `volumen`, `remove`, `move`, `clear`, `shuffle`, `seek`, `autoplay` and panel buttons) are allowed for:
+Los controles de reproducción (`pause`, `resume`, `skip`, `stop`, `loop`, `remove`, `move`, `clear`, `shuffle`, `autoplay` y botones del panel) están disponibles para:
 
-- Members with **Manage Server** or the server owner.
-- Members with the role set in `DJ_ROLE_ID`.
-- Members connected to the same voice channel as the bot.
+- Miembros con **Manage Server** o el dueño del servidor.
+- Miembros con el rol configurado en `DJ_ROLE_ID`.
+- Miembros conectados al mismo canal de voz que el bot.
 
-If `DJ_ROLE_ID` is `0` (default), only admins/owner and members in the voice channel can control playback.
+Si `DJ_ROLE_ID` es `0` (por defecto), solo admins/dueño y miembros en el canal de voz pueden controlar la reproducción.
 
 ## Requirements
 
 - Python 3.11+
-- FFmpeg installed and available in `PATH`
-- Discord bot token with the `message_content` intent enabled
-- Groq API key (for the AI module)
+- FFmpeg instalado y disponible en `PATH`
+- Token de bot de Discord con el intent `message_content` habilitado
+- Groq API key (para el módulo de IA)
 
 ## Installation
 
-### 1. Clone the repository
+### 1. Clonar el repositorio
 
 ```bash
 git clone <repository-url>
 cd discord-bot
 ```
 
-### 2. Create a virtual environment and install dependencies
+### 2. Instalar dependencias
 
 ```bash
-python -m venv venv
-# Windows
-venv\Scripts\activate
-# Linux / macOS
-source venv/bin/activate
-
 pip install -r requirements.txt
 ```
 
-### 3. Configure environment variables
+### 3. Configurar variables de entorno
 
-Create a `.env` file in the project root:
+Crea un archivo `.env` en la raíz del proyecto:
 
 ```env
 DISCORD_TOKEN=your_discord_token
@@ -140,23 +139,24 @@ TTS_VOICE=es-MX-DaliaNeural
 WATCHDOG_TIMEOUT=120
 ```
 
-| Variable | Description |
+| Variable | Descripción |
 |----------|-------------|
-| `DISCORD_TOKEN` | Bot token (from the [Discord Developer Portal](https://discord.com/developers/applications)) |
-| `CANAL_ID` | Channel for automatic reminders |
-| `AVISO_CANAL_ID` | Channel for startup/crash alerts (defaults to `CANAL_ID`) |
-| `DJ_ROLE_ID` | Role allowed to control playback (`0` disables it) |
-| `PRECIO` | Price per person for YouTube Premium |
-| `DIA_RECORDATORIO` | Day of the month for the reminder (1–31) |
-| `AMIGOS_IDS` | Comma-separated user IDs to mention |
-| `GROQ_API_KEY` | Groq API key ([console.groq.com](https://console.groq.com)) |
-| `GROQ_MODEL` | Groq model (default `openai/gpt-oss-120b`) |
-| `TTS_VOICE` | Edge TTS voice (default `es-MX-DaliaNeural`) |
-| `WATCHDOG_TIMEOUT` | Seconds without heartbeat before restart (default `120`) |
+| `DISCORD_TOKEN` | Token del bot ([Discord Developer Portal](https://discord.com/developers/applications)) |
+| `CANAL_ID` | Canal para recordatorios automáticos |
+| `AVISO_CANAL_ID` | Canal para alertas de inicio/caída (por defecto igual a `CANAL_ID`) |
+| `DJ_ROLE_ID` | Rol que puede controlar la reproducción (`0` deshabilitado) |
+| `PRECIO` | Precio por persona para YouTube Premium |
+| `DIA_RECORDATORIO` | Día del mes para el recordatorio (1–31) |
+| `AMIGOS_IDS` | IDs de usuario separados por coma para mencionar |
+| `CLABE` | CLABE interbancaria para el recordatorio de pago |
+| `GROQ_API_KEY` | API key de Groq ([console.groq.com](https://console.groq.com)) |
+| `GROQ_MODEL` | Modelo de Groq (por defecto `openai/gpt-oss-120b`) |
+| `TTS_VOICE` | Voz de Edge TTS (por defecto `es-MX-DaliaNeural`) |
+| `WATCHDOG_TIMEOUT` | Segundos sin heartbeat antes de reiniciar (por defecto `120`) |
 
-### 4. Install FFmpeg
+### 4. Instalar FFmpeg
 
-**Windows:** Download from [ffmpeg.org](https://ffmpeg.org/download.html) and add it to `PATH`.
+**Windows:** Descarga desde [ffmpeg.org](https://ffmpeg.org/download.html) y agrégalo al `PATH`.
 
 **Linux:**
 ```bash
@@ -168,48 +168,41 @@ sudo apt install ffmpeg
 brew install ffmpeg
 ```
 
-**Termux:**
-```bash
-pkg install ffmpeg
-```
+### 5. Iniciar el bot
 
-### 5. Run the bot
+**Windows** (doble clic):
+- `start_bot.vbs` — Inicia el bot en segundo plano
+- `restart_bot.vbs` — Detiene y reinicia el bot
+- `stop_bot.vbs` — Detiene el bot
 
+**Línea de comandos:**
 ```bash
 python main.py
 ```
 
-Or with the watchdog (restarts the bot if the heartbeat goes stale):
-
-```bash
-./run.sh
-```
-
 ## Operations
 
-- `main.py` writes `heartbeat` every 30 seconds.
-- `run.sh` checks the heartbeat every 15 seconds and restarts the bot after `WATCHDOG_TIMEOUT`; it also sends a Discord alert on crash/hang (throttled to 5 minutes).
-- Logs are written to `bot.log` with rotation.
-- `db.py` stores playlists, history and reminders in `bot.db` (SQLite).
-- `~/bin/actualizar-ytdlp` (cron) updates yt-dlp weekly and restarts the bot if the version changed.
-- `~/.termux/boot/10-discord-bot.sh` starts the bot on boot with a wake-lock.
+- `main.py` escribe `heartbeat` cada 30 segundos.
+- `db.py` almacena playlists, historial y recordatorios en `bot.db` (SQLite).
 
 ## Project Structure
 
 ```
 discord-bot/
-├── main.py              # Entry point, cog loader, heartbeat and alerts
-├── config.py            # Environment variable reader
-├── db.py                # SQLite helpers (playlists, history, reminders)
-├── run.sh               # Watchdog wrapper
-├── requirements.txt     # Main dependencies
-├── .env                 # Environment variables (not tracked by git)
+├── main.py              # Entry point, cog loader, heartbeat y alertas
+├── config.py            # Lector de variables de entorno
+├── db.py                # Helpers SQLite (playlists, historial, recordatorios)
+├── requirements.txt     # Dependencias principales
+├── start_bot.vbs        # Inicia el bot en segundo plano (Windows)
+├── restart_bot.vbs      # Reinicia el bot (Windows)
+├── stop_bot.vbs         # Detiene el bot (Windows)
+├── .env                 # Variables de entorno (no trackeado por git)
 └── cogs/
-    ├── general.py       # Help, ping, uptime and stats
-    ├── musica.py        # YouTube playback, queue, panel, playlists and lyrics
-    ├── voz.py           # TTS with Edge TTS / eSpeak
-    ├── recordatorio.py  # Monthly and flexible reminders
-    └── ia.py            # AI chat with Groq
+    ├── general.py       # Help, ping, uptime y stats
+    ├── musica.py        # Reproducción YouTube, cola, panel con botones y playlists
+    ├── voz.py           # TTS con Edge TTS / eSpeak
+    ├── recordatorio.py  # Recordatorios mensuales y por usuario
+    └── ia.py            # Chat IA con Groq
 ```
 
 ## Dependencies
@@ -221,7 +214,6 @@ pyttsx3>=2.90
 python-dotenv>=1.0.0
 PyNaCl>=1.5.0
 groq>=0.9.0
-davey>=0.1.7
 edge-tts>=7.3.1
 aiohttp>=3.9.0
 ```
