@@ -83,6 +83,19 @@ def playlist_delete(guild_id: int, name: str) -> int:
         return cur.rowcount
 
 
+def playlist_remove_at(guild_id: int, name: str, index: int) -> int | None:
+    with _con() as con:
+        fila = con.execute(
+            "SELECT id FROM playlists WHERE guild_id = ? AND name = ? "
+            "ORDER BY position LIMIT 1 OFFSET ?",
+            (guild_id, name, index - 1),
+        ).fetchone()
+        if fila is None:
+            return None
+        con.execute("DELETE FROM playlists WHERE id = ?", (fila["id"],))
+    return fila["id"]
+
+
 def history_add(guild_id: int, user_id: int | None, title: str, query: str):
     with _con() as con:
         con.execute(

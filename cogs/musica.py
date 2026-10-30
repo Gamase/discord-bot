@@ -1,8 +1,11 @@
 import asyncio
 import random
+import re
 import time
 from collections import deque
+from urllib.parse import quote
 
+import aiohttp
 import discord
 import yt_dlp
 from discord import ui
@@ -35,6 +38,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.webpage_url: str = data.get('webpage_url', '')
         self.duration: int | None = data.get('duration')
         self.thumbnail: str | None = data.get('thumbnail')
+        self.artist: str = data.get('artist') or data.get('uploader') or ''
         self.query: str = data.get('query', self.webpage_url)
 
     @classmethod
@@ -886,6 +890,49 @@ class Musica(commands.Cog):
             return await ctx.send(f"❌ No existe la playlist **{nombre}**.")
         await ctx.send(f"🗑️ Playlist **{nombre}** eliminada (**{cantidad}** canción(es)).")
 
+    @playlist.command(name='add', aliases=['agregar', 'añadir'])
+    async def playlist_add(self, ctx: commands.Context, nombre: str, *, consulta: str | None = None):
+        """Agrega la cola actual (o una búsqueda) a una playlist. Uso: !playlist add <nombre> [canción]"""
+        nombre = nombre.strip()[:50]
+        state = self._state(ctx.guild.id)
+        pistas = []
+
+        if consulta:
+            async with ctx.typing():
+                resultados = await self._buscar(consulta, 1)
+            if not resultados:
+                return await ctx.send("❌ No se encontró la canción.")
+            r = resultados[0]
+            url = r.get('webpage_url') or r.get('url') or f"https://www.youtube.com/watch?v={r.get('id')}"
+            pistas.append((url, r.get('title', 'Canción')))
+        else:
+            if state.current:
+                pistas.append((state.current.query, state.current.title))
+            for pista in state.queue:
+                pistas.append((pista.query, pista.title))
+            if not pistas:
+                return await ctx.send("📭 No hay nada para agregar (cola vacía).")
+
+        for query, title in pistas:
+            db.playlist_add(ctx.guild.id, nombre, query, title)
+
+        total = len(db.playlist_tracks(ctx.guild.id, nombre))
+        await ctx.send(f"➕ Agregadas **{len(pistas)}** canción(es) a **{nombre}** (total: **{total}**).")
+
+    @playlist.command(name='remove', aliases=['quitar', 'rm'])
+    async def playlist_remove(self, ctx: commands.Context, nombre: str, posicion: int):
+        """Quita una canción de una playlist. Uso: !playlist remove <nombre> <n>"""
+        nombre = nombre.strip()[:50]
+        filas = db.playlist_tracks(ctx.guild.id, nombre)
+        if not filas:
+            return await ctx.send(f"❌ No existe la playlist **{nombre}**.")
+        if not (1 <= posicion <= len(filas)):
+            return await ctx.send(f"❌ Posición inválida. La playlist tiene **{len(filas)}** canción(es).")
+
+        quitada = filas[posicion - 1]
+        db.playlist_remove_at(ctx.guild.id, nombre, posicion)
+        await ctx.send(f"🗑️ Quitada de **{nombre}**: **{quitada['title']}**")
+
     @commands.command(name='remove', aliases=['quitar', 'rm'])
     async def remove(self, ctx: commands.Context, posicion: int):
         """Quita una canción de la cola por su posición. Uso: !remove <n>"""
@@ -1004,6 +1051,67 @@ class Musica(commands.Cog):
 
         await self._refresh_panel(ctx.guild.id)
         await ctx.send(f"📻 Autoplay: **{'activado' if state.autoplay else 'desactivado'}**")
+
+    @commands.command(name='lyrics', aliases=['letra'])
+    async def lyrics(self, ctx: commands.Context, *, consulta: str | None = None):
+        """Muestra la letra de la canción actual o de una búsqueda. Uso: !lyrics [artista - canción]"""
+        state = self._state(ctx.guild.id)
+
+        if consulta:
+            if ' - ' in consulta:
+                artista, titulo = consulta.split(' - ', 1)
+            else:
+                artista, titulo = '', consulta
+        elif state.current:
+            artista = getattr(state.current, 'artist', '') or ''
+            titulo = self._limpiar_titulo(state.current.title)
+        else:
+            return await ctx.send("❌ No hay canción sonando. Usá `!lyrics <artista - canción>`.")
+
+        artista = artista.strip()
+        titulo = titulo.strip()
+        if not titulo:
+            return await ctx.send("❌ No pude identificar la canción.")
+
+        async with ctx.typing():
+            letra = await self._fetch_lyrics(artista, titulo)
+
+        if not letra:
+            return await ctx.send(f"❌ No encontré la letra de **{titulo}**.")
+
+        letra = letra.replace('\r\n', '\n').strip()
+        embed = discord.Embed(
+            title=f"🎤 {artista + ' - ' if artista else ''}{titulo}",
+            description=letra[:4000],
+            color=discord.Color.purple(),
+        )
+        if len(letra) > 4000:
+            embed.set_footer(text="Letra truncada (muy larga).")
+        await ctx.send(embed=embed)
+
+    @staticmethod
+    def _limpiar_titulo(titulo: str) -> str:
+        t = re.sub(r'[\(\[].*?[\)\]]', ' ', titulo)
+        t = re.sub(r'(?i)\b(official|video|audio|lyrics?|letra|hd|hq|remaster(ed)?|en vivo|live|visualizer)\b', ' ', t)
+        t = re.sub(r'\s+', ' ', t)
+        return t.strip(' -|/')
+
+    @staticmethod
+    async def _fetch_lyrics(artista: str, titulo: str) -> str | None:
+        if not artista:
+            artista = 'Various Artists'
+        url = f"https://api.lyrics.ovh/v1/{quote(artista)}/{quote(titulo)}"
+        timeout = aiohttp.ClientTimeout(total=15)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as sesion:
+                async with sesion.get(url) as resp:
+                    if resp.status != 200:
+                        return None
+                    datos = await resp.json(content_type=None)
+                    return datos.get('lyrics')
+        except Exception as e:
+            print(f'⚠️ Error buscando letra: {e}')
+            return None
 
     @commands.command(name='stop', aliases=['detener'])
     async def stop(self, ctx: commands.Context):
