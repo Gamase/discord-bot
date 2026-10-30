@@ -165,3 +165,9 @@ def reminder_delete(reminder_id: int, user_id: int) -> int:
 def reminder_delete_by_id(reminder_id: int):
     with _con() as con:
         con.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+
+
+def playlist_clear_all(guild_id: int) -> int:
+    with _con() as con:
+        cur = con.execute("DELETE FROM playlists WHERE guild_id = ?", (guild_id,))
+        return cur.rowcount

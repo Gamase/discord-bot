@@ -3,9 +3,8 @@ import random
 import re
 import time
 from collections import deque
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, urlparse
 
-import aiohttp
 import discord
 import yt_dlp
 from discord import ui
@@ -94,6 +93,180 @@ class GuildState:
         self.auto_seen: set[str] = set()
 
 
+# ── Modals ────────────────────────────────────────────────────────────────────
+
+class SavePlaylistModal(ui.Modal, title='💾 Guardar Playlist'):
+    nombre = ui.TextInput(
+        label='Nombre de la playlist',
+        max_length=50,
+        min_length=1,
+        placeholder='Mi Playlist',
+    )
+
+    def __init__(self, cog: 'Musica', guild_id: int):
+        super().__init__()
+        self.cog = cog
+        self.guild_id = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        state = self.cog._state(self.guild_id)
+        pistas = []
+        if state.current:
+            pistas.append((state.current.query, state.current.title))
+        for p in state.queue:
+            pistas.append((p.query, p.title))
+
+        if not pistas:
+            return await interaction.response.send_message(
+                "📭 No hay nada en la cola para guardar.", ephemeral=True
+            )
+
+        nombre = self.nombre.value.strip()
+        existente = len(db.playlist_tracks(self.guild_id, nombre))
+        db.playlist_delete(self.guild_id, nombre)
+        for query, title in pistas:
+            db.playlist_add(self.guild_id, nombre, query, title)
+
+        accion = "sobrescrita" if existente else "guardada"
+        await interaction.response.send_message(
+            f"💾 Playlist **{nombre}** {accion} con **{len(pistas)}** canción(es).",
+            ephemeral=True,
+        )
+
+
+# ── Playlist HUD ──────────────────────────────────────────────────────────────
+
+class ConfirmDeleteView(ui.View):
+    def __init__(self, cog: 'Musica', guild_id: int, opciones: list[discord.SelectOption]):
+        super().__init__(timeout=30)
+        self.cog = cog
+        self.guild_id = guild_id
+
+        sel = ui.Select(placeholder='Elegí una playlist para borrar...', options=opciones)
+        sel.callback = self._confirmar
+        self.add_item(sel)
+
+    async def _confirmar(self, interaction: discord.Interaction):
+        nombre = interaction.data['values'][0]
+        cantidad = db.playlist_delete(self.guild_id, nombre)
+        await interaction.response.edit_message(
+            content=f"🗑️ Playlist **{nombre}** eliminada ({cantidad} canción(es)).",
+            embed=None,
+            view=None,
+        )
+
+
+class PlaylistView(ui.View):
+    def __init__(self, cog: 'Musica', guild_id: int, user_id: int):
+        super().__init__(timeout=60)
+        self.cog = cog
+        self.guild_id = guild_id
+        self.user_id = user_id
+
+        nombres = db.playlist_names(guild_id)
+
+        if nombres:
+            opciones = [
+                discord.SelectOption(
+                    label=f['name'],
+                    description=f"{f['total']} canción(es)",
+                )
+                for f in nombres[:25]
+            ]
+            sel = ui.Select(placeholder='Elegí una playlist para cargar...', options=opciones)
+            sel.callback = self._cargar
+            self.add_item(sel)
+
+        btn_save = ui.Button(label='💾 Guardar cola actual', style=discord.ButtonStyle.success)
+        btn_save.callback = self._guardar
+        self.add_item(btn_save)
+
+        if nombres:
+            btn_del = ui.Button(label='🗑️ Borrar playlist', style=discord.ButtonStyle.danger)
+            btn_del.callback = self._borrar
+            self.add_item(btn_del)
+
+    async def _cargar(self, interaction: discord.Interaction):
+        nombre = interaction.data['values'][0]
+
+        if not interaction.user.voice:
+            return await interaction.response.send_message(
+                "❌ Debes estar en un canal de voz.", ephemeral=True
+            )
+
+        await interaction.response.send_message(
+            f"⏳ Cargando playlist **{nombre}**...", ephemeral=True
+        )
+
+        filas = db.playlist_tracks(self.guild_id, nombre)
+        if not filas:
+            return await interaction.edit_original_response(
+                content=f"❌ Playlist **{nombre}** está vacía."
+            )
+
+        guild = interaction.guild
+        vc = guild.voice_client
+        if not vc:
+            vc = await interaction.user.voice.channel.connect()
+
+        state = self.cog._state(self.guild_id)
+        state.channel = interaction.channel
+        if vc.channel:
+            state.voice_channel_id = vc.channel.id
+
+        pendientes = [
+            PendingTrack(f['query'], f['title'], interaction.user.id) for f in filas
+        ]
+
+        if vc.is_playing() or vc.is_paused():
+            state.queue.extend(pendientes)
+            await interaction.edit_original_response(
+                content=f"✅ Playlist **{nombre}** agregada a la cola: **{len(pendientes)}** canción(es)."
+            )
+        else:
+            primero = pendientes.pop(0)
+            source = await self.cog._reextract(primero)
+            if source is None:
+                return await interaction.edit_original_response(
+                    content="❌ No se pudo cargar la playlist."
+                )
+            source.user_id = interaction.user.id
+            state.queue.extend(pendientes)
+            state.current = source
+            self.cog._play(vc, source, self.guild_id)
+            self.cog._record_history(self.guild_id, source)
+            await self.cog._start_panel(self.guild_id)
+            await interaction.edit_original_response(
+                content=f"▶️ Playlist **{nombre}**: **{source.title}** (+{len(pendientes)} en cola)"
+            )
+
+    async def _guardar(self, interaction: discord.Interaction):
+        state = self.cog._state(self.guild_id)
+        if not state.current and not state.queue:
+            return await interaction.response.send_message(
+                "📭 No hay nada en la cola para guardar.", ephemeral=True
+            )
+        modal = SavePlaylistModal(self.cog, self.guild_id)
+        await interaction.response.send_modal(modal)
+
+    async def _borrar(self, interaction: discord.Interaction):
+        nombres = db.playlist_names(self.guild_id)
+        if not nombres:
+            return await interaction.response.send_message(
+                "📭 No hay playlists guardadas.", ephemeral=True
+            )
+        opciones = [
+            discord.SelectOption(label=f['name'], description=f"{f['total']} canción(es)")
+            for f in nombres[:25]
+        ]
+        view = ConfirmDeleteView(self.cog, self.guild_id, opciones)
+        await interaction.response.send_message(
+            "Seleccioná la playlist a borrar:", view=view, ephemeral=True
+        )
+
+
+# ── Panel View ────────────────────────────────────────────────────────────────
+
 class PanelView(ui.View):
     def __init__(self, cog: 'Musica', guild_id: int):
         super().__init__(timeout=None)
@@ -113,7 +286,9 @@ class PanelView(ui.View):
         )
         return False
 
-    @ui.button(emoji='⏯️', style=discord.ButtonStyle.primary)
+    # ── Fila 1: controles de reproducción ─────────────────────────────────────
+
+    @ui.button(emoji='⏯️', style=discord.ButtonStyle.primary, row=0)
     async def toggle(self, interaction: discord.Interaction, button: ui.Button):
         state = self._state()
         vc = interaction.guild.voice_client
@@ -125,16 +300,19 @@ class PanelView(ui.View):
             if state.paused_at is None:
                 state.paused_at = time.monotonic()
             vc.pause()
+            accion = "⏸️ Pausado."
         elif vc.is_paused():
             if state.paused_at is not None:
                 state.paused_total += time.monotonic() - state.paused_at
                 state.paused_at = None
             vc.resume()
-        await interaction.response.edit_message(
-            embed=self.cog._panel_embed(state), view=self
-        )
+            accion = "▶️ Reanudado."
+        else:
+            return await interaction.response.send_message("❌ No hay música.", ephemeral=True)
+        await interaction.response.edit_message(embed=self.cog._panel_embed(state), view=self)
+        await interaction.followup.send(accion, ephemeral=True)
 
-    @ui.button(emoji='⏭️', style=discord.ButtonStyle.secondary)
+    @ui.button(emoji='⏭️', style=discord.ButtonStyle.secondary, row=0)
     async def skip(self, interaction: discord.Interaction, button: ui.Button):
         state = self._state()
         vc = interaction.guild.voice_client
@@ -143,29 +321,31 @@ class PanelView(ui.View):
                 "❌ No hay música reproduciéndose.", ephemeral=True
             )
         state.skip_next = True
-        await interaction.response.defer()
+        await interaction.response.send_message(
+            "⏭️ Saltando a la siguiente canción...", ephemeral=True
+        )
         vc.stop()
 
-    @ui.button(emoji='📋', style=discord.ButtonStyle.secondary)
-    async def cola(self, interaction: discord.Interaction, button: ui.Button):
-        state = self._state()
-        embed = self.cog._queue_embed(state)
-        if embed is None:
-            return await interaction.response.send_message(
-                "📭 La cola está vacía.", ephemeral=True
-            )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @ui.button(emoji='🔁', style=discord.ButtonStyle.secondary)
+    @ui.button(emoji='🔁', style=discord.ButtonStyle.secondary, row=0)
     async def loop(self, interaction: discord.Interaction, button: ui.Button):
         state = self._state()
         orden = ['off', 'one', 'all']
         state.loop = orden[(orden.index(state.loop) + 1) % len(orden)]
-        await interaction.response.edit_message(
-            embed=self.cog._panel_embed(state), view=self
+        nombres = {'off': '➡️ Desactivado', 'one': '🔂 Repetir canción', 'all': '🔁 Repetir cola'}
+        await interaction.response.edit_message(embed=self.cog._panel_embed(state), view=self)
+        await interaction.followup.send(f"🔁 Loop: **{nombres[state.loop]}**", ephemeral=True)
+
+    @ui.button(emoji='📻', style=discord.ButtonStyle.secondary, row=0)
+    async def autoplay_btn(self, interaction: discord.Interaction, button: ui.Button):
+        state = self._state()
+        state.autoplay = not state.autoplay
+        await interaction.response.edit_message(embed=self.cog._panel_embed(state), view=self)
+        await interaction.followup.send(
+            f"📻 Autoplay: **{'activado ✅' if state.autoplay else 'desactivado ❌'}**",
+            ephemeral=True,
         )
 
-    @ui.button(emoji='⏹️', style=discord.ButtonStyle.danger)
+    @ui.button(emoji='⏹️', style=discord.ButtonStyle.danger, row=0)
     async def stop(self, interaction: discord.Interaction, button: ui.Button):
         state = self._state()
         vc = interaction.guild.voice_client
@@ -179,11 +359,85 @@ class PanelView(ui.View):
         state.paused_at = None
         if vc:
             await vc.disconnect()
-        embed = discord.Embed(
-            title="⏹️ Reproducción detenida", color=discord.Color.dark_gray()
-        )
+        embed = discord.Embed(title="⏹️ Reproducción detenida", color=discord.Color.dark_gray())
         await interaction.response.edit_message(embed=embed, view=None)
 
+    # ── Fila 2: cola y playlists ───────────────────────────────────────────────
+
+    @ui.button(emoji='📋', style=discord.ButtonStyle.secondary, row=1)
+    async def cola(self, interaction: discord.Interaction, button: ui.Button):
+        state = self._state()
+        embed = self.cog._queue_embed(state)
+        if embed is None:
+            return await interaction.response.send_message(
+                "📭 La cola está vacía.", ephemeral=True
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @ui.button(emoji='🔀', style=discord.ButtonStyle.secondary, row=1)
+    async def shuffle_btn(self, interaction: discord.Interaction, button: ui.Button):
+        state = self._state()
+        lista = list(state.queue)
+        if len(lista) < 2:
+            return await interaction.response.send_message(
+                "📭 Necesitás al menos 2 canciones en la cola para mezclar.", ephemeral=True
+            )
+        random.shuffle(lista)
+        state.queue = deque(lista)
+        await interaction.response.defer(ephemeral=True)
+        await self.cog._refresh_panel(self.guild_id)
+        await interaction.followup.send(
+            f"🔀 Cola mezclada (**{len(lista)}** canciones).", ephemeral=True
+        )
+
+    @ui.button(emoji='🧹', style=discord.ButtonStyle.secondary, row=1)
+    async def limpiar(self, interaction: discord.Interaction, button: ui.Button):
+        state = self._state()
+        cantidad = len(state.queue)
+        if not cantidad:
+            return await interaction.response.send_message(
+                "📭 La cola ya está vacía.", ephemeral=True
+            )
+        state.queue.clear()
+        await interaction.response.defer(ephemeral=True)
+        await self.cog._refresh_panel(self.guild_id)
+        await interaction.followup.send(
+            f"🧹 Cola limpiada (**{cantidad}** canción(es) eliminadas).", ephemeral=True
+        )
+
+    @ui.button(emoji='💾', style=discord.ButtonStyle.success, row=1)
+    async def guardar_playlist(self, interaction: discord.Interaction, button: ui.Button):
+        state = self._state()
+        if not state.current and not state.queue:
+            return await interaction.response.send_message(
+                "📭 No hay nada en la cola para guardar.", ephemeral=True
+            )
+        modal = SavePlaylistModal(self.cog, self.guild_id)
+        await interaction.response.send_modal(modal)
+
+    @ui.button(emoji='📂', style=discord.ButtonStyle.secondary, row=1)
+    async def playlists_btn(self, interaction: discord.Interaction, button: ui.Button):
+        nombres = db.playlist_names(self.guild_id)
+        if nombres:
+            desc = "\n".join(
+                f"• **{f['name']}** — {f['total']} canción(es)" for f in nombres
+            )
+            embed = discord.Embed(
+                title="📂 Playlists guardadas",
+                description=desc,
+                color=discord.Color.green(),
+            )
+        else:
+            embed = discord.Embed(
+                title="📂 Playlists",
+                description="No hay playlists guardadas.\nUsá 💾 para guardar la cola actual.",
+                color=discord.Color.dark_gray(),
+            )
+        view = PlaylistView(self.cog, self.guild_id, interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+# ── Search View ───────────────────────────────────────────────────────────────
 
 class SearchView(ui.View):
     def __init__(self, cog: 'Musica', ctx: commands.Context, resultados: list[dict]):
@@ -225,6 +479,8 @@ class SearchView(ui.View):
             except Exception:
                 pass
 
+
+# ── Cog ───────────────────────────────────────────────────────────────────────
 
 class Musica(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -270,16 +526,6 @@ class Musica(commands.Cog):
         if partes.netloc.endswith('youtu.be'):
             return partes.path.lstrip('/')
         return ''
-
-    @staticmethod
-    def _parse_tiempo(texto: str) -> int:
-        texto = texto.strip()
-        if ':' in texto:
-            total = 0
-            for parte in texto.split(':'):
-                total = total * 60 + int(parte)
-            return total
-        return int(texto)
 
     def _es_dj_member(self, member: discord.Member, guild: discord.Guild) -> bool:
         if member.guild_permissions.manage_guild or member.id == guild.owner_id:
@@ -410,7 +656,7 @@ class Musica(commands.Cog):
             print(f'⚠️ Autoplay radio falló: {e}')
             return []
 
-    async def _cargar_playlist(self, ctx: commands.Context, url: str):
+    async def _cargar_playlist_url(self, ctx: commands.Context, url: str):
         async with ctx.typing():
             info = await self._extraer_playlist(url)
 
@@ -572,6 +818,16 @@ class Musica(commands.Cog):
         lleno = min(int(ancho * pos / dur), ancho - 1)
         return "▬" * lleno + "🔘" + "▬" * (ancho - lleno - 1)
 
+    @staticmethod
+    def _limpiar_titulo(titulo: str) -> str:
+        t = re.sub(r'[\(\[].*?[\)\]]', ' ', titulo)
+        t = re.sub(
+            r'(?i)\b(official|video|audio|lyrics?|letra|hd|hq|remaster(ed)?|en vivo|live|visualizer)\b',
+            ' ', t,
+        )
+        t = re.sub(r'\s+', ' ', t)
+        return t.strip(' -|/')
+
     def _start_timer(self, state: GuildState):
         state.started_at = time.monotonic()
         state.paused_total = 0.0
@@ -611,8 +867,9 @@ class Musica(commands.Cog):
         else:
             progreso = f"`{self._fmt(pos)} / --:--`"
 
-        icono = {'off': '➡️', 'one': '🔂', 'all': '🔁'}.get(state.loop, '➡️')
+        icono_loop = {'off': '➡️', 'one': '🔂', 'all': '🔁'}.get(state.loop, '➡️')
         estado = '⏸️ Pausado' if state.paused_at is not None else '▶️ Reproduciendo'
+        auto = '📻 ON' if state.autoplay else '📻 OFF'
 
         embed = discord.Embed(
             title=estado,
@@ -620,8 +877,7 @@ class Musica(commands.Cog):
             color=discord.Color.blurple(),
         )
         embed.add_field(name="Progreso", value=progreso, inline=False)
-        auto = '📻' if state.autoplay else '—'
-        embed.set_footer(text=f"Loop {icono}  •  Vol {int(src.volume * 100)}%  •  Autoplay {auto}")
+        embed.set_footer(text=f"Loop {icono_loop}  •  {auto}  •  Cola: {len(state.queue)}")
         if src.thumbnail:
             embed.set_thumbnail(url=src.thumbnail)
         return embed
@@ -718,7 +974,8 @@ class Musica(commands.Cog):
             ),
         )
 
-    async def _reextract(self, source: YTDLSource, seek: float | None = None) -> YTDLSource | None:
+    async def _reextract(self, source: YTDLSource | PendingTrack,
+                         seek: float | None = None) -> YTDLSource | None:
         try:
             return await YTDLSource.from_url(source.query, loop=self.bot.loop, seek=seek)
         except Exception as e:
@@ -781,20 +1038,19 @@ class Musica(commands.Cog):
             state.current = None
             self._stop_panel(state)
 
+    # ── Comandos de texto ─────────────────────────────────────────────────────
+
     @commands.command(name='join', aliases=['conectar'])
     async def join(self, ctx: commands.Context):
         """Conecta el bot a tu canal de voz."""
         if not ctx.author.voice:
             return await ctx.send("❌ Debes estar en un canal de voz.")
-
         channel = ctx.author.voice.channel
         vc = ctx.guild.voice_client
-
         if vc:
             await vc.move_to(channel)
         else:
             await channel.connect()
-
         self._state(ctx.guild.id).voice_channel_id = channel.id
         await ctx.send(f"✅ Conectado a **{channel.name}**")
 
@@ -803,32 +1059,26 @@ class Musica(commands.Cog):
         """Reproduce música. Acepta URL, playlist de YouTube/YT Music o búsqueda."""
         if not ctx.author.voice:
             return await ctx.send("❌ Debes estar en un canal de voz.")
-
         vc = ctx.guild.voice_client
         if not vc:
             vc = await ctx.author.voice.channel.connect()
-
         state = self._state(ctx.guild.id)
         state.channel = ctx.channel
         if vc.channel:
             state.voice_channel_id = vc.channel.id
-
         if self._es_url(query):
             if self._es_playlist(query):
-                return await self._cargar_playlist(ctx, query)
+                return await self._cargar_playlist_url(ctx, query)
             async with ctx.typing():
                 try:
                     source = await YTDLSource.from_url(query, loop=self.bot.loop)
                 except Exception as e:
                     return await ctx.send(f"❌ Error al obtener el audio: {e}")
             return await self._encolar_o_reproducir(ctx, source)
-
         async with ctx.typing():
             resultados = await self._buscar(query, 5)
-
         if not resultados:
             return await ctx.send("❌ No encontré resultados para esa búsqueda.")
-
         view = SearchView(self, ctx, resultados)
         msg = await ctx.send(embed=self._embed_busqueda(query, resultados), view=view)
         view.message = msg
@@ -901,10 +1151,7 @@ class Musica(commands.Cog):
         filas = db.history_recent(ctx.guild.id, 10)
         if not filas:
             return await ctx.send("📭 Todavía no hay historial.")
-
-        lineas = []
-        for i, fila in enumerate(filas, 1):
-            lineas.append(f"`{i}.` **{fila['title']}**")
+        lineas = [f"`{i}.` **{fila['title']}**" for i, fila in enumerate(filas, 1)]
         embed = discord.Embed(
             title="🕘 Últimas canciones",
             description="\n".join(lineas),
@@ -920,177 +1167,19 @@ class Musica(commands.Cog):
             return await ctx.send("📭 Todavía no hay historial.")
         if not ctx.author.voice:
             return await ctx.send("❌ Debes estar en un canal de voz.")
-
         vc = ctx.guild.voice_client
         if not vc:
             vc = await ctx.author.voice.channel.connect()
-
         state = self._state(ctx.guild.id)
         state.channel = ctx.channel
         if vc.channel:
             state.voice_channel_id = vc.channel.id
-
         async with ctx.typing():
             try:
                 source = await YTDLSource.from_url(fila['query'], loop=self.bot.loop)
             except Exception as e:
                 return await ctx.send(f"❌ Error al obtener el audio: {e}")
-
         await self._encolar_o_reproducir(ctx, source)
-
-    @commands.group(name='playlist', aliases=['pl'], invoke_without_command=True)
-    async def playlist(self, ctx: commands.Context):
-        """Guarda y carga playlists. Uso: !playlist save|load|list|show|delete <nombre>"""
-        await ctx.send("Uso: `!playlist save|load|list|show|delete <nombre>`")
-
-    @playlist.command(name='save', aliases=['guardar'])
-    async def playlist_save(self, ctx: commands.Context, *, nombre: str):
-        """Guarda la canción actual y la cola como playlist."""
-        state = self._state(ctx.guild.id)
-        pistas = []
-        if state.current:
-            pistas.append((state.current.query, state.current.title))
-        for pista in state.queue:
-            pistas.append((pista.query, pista.title))
-
-        if not pistas:
-            return await ctx.send("📭 No hay nada para guardar (cola vacía).")
-
-        nombre = nombre.strip()[:50]
-        existente = len(db.playlist_tracks(ctx.guild.id, nombre))
-        db.playlist_delete(ctx.guild.id, nombre)
-        for query, title in pistas:
-            db.playlist_add(ctx.guild.id, nombre, query, title)
-
-        accion = "sobrescrita" if existente else "guardada"
-        await ctx.send(f"💾 Playlist **{nombre}** {accion} con **{len(pistas)}** canción(es).")
-
-    @playlist.command(name='load', aliases=['cargar'])
-    async def playlist_load(self, ctx: commands.Context, *, nombre: str):
-        """Carga y reproduce una playlist guardada."""
-        if not ctx.author.voice:
-            return await ctx.send("❌ Debes estar en un canal de voz.")
-
-        nombre = nombre.strip()[:50]
-        filas = db.playlist_tracks(ctx.guild.id, nombre)
-        if not filas:
-            return await ctx.send(f"❌ No existe la playlist **{nombre}**.")
-
-        vc = ctx.guild.voice_client
-        if not vc:
-            vc = await ctx.author.voice.channel.connect()
-
-        state = self._state(ctx.guild.id)
-        state.channel = ctx.channel
-        if vc.channel:
-            state.voice_channel_id = vc.channel.id
-
-        pendientes = [PendingTrack(f['query'], f['title'], ctx.author.id) for f in filas]
-
-        if vc.is_playing() or vc.is_paused():
-            state.queue.extend(pendientes)
-            return await ctx.send(
-                f"✅ Playlist **{nombre}** agregada: **{len(pendientes)}** canción(es)."
-            )
-
-        primero = pendientes.pop(0)
-        async with ctx.typing():
-            source = await self._reextract(primero)
-        if source is None:
-            return await ctx.send("❌ No se pudo reproducir la playlist.")
-
-        source.user_id = ctx.author.id
-        state.queue.extend(pendientes)
-        state.current = source
-        self._play(vc, source, ctx.guild.id)
-        self._record_history(ctx.guild.id, source)
-        await self._start_panel(ctx.guild.id)
-        await ctx.send(
-            f"▶️ Playlist **{nombre}**: **{source.title}** (+{len(pendientes)} en cola)"
-        )
-
-    @playlist.command(name='list', aliases=['lista'])
-    async def playlist_list(self, ctx: commands.Context):
-        """Lista las playlists guardadas."""
-        filas = db.playlist_names(ctx.guild.id)
-        if not filas:
-            return await ctx.send("📭 No hay playlists guardadas.")
-
-        lineas = [f"• **{fila['name']}** — {fila['total']} canción(es)" for fila in filas]
-        embed = discord.Embed(
-            title="🎧 Playlists guardadas",
-            description="\n".join(lineas)[:4000],
-            color=discord.Color.green(),
-        )
-        await ctx.send(embed=embed)
-
-    @playlist.command(name='show', aliases=['ver'])
-    async def playlist_show(self, ctx: commands.Context, *, nombre: str):
-        """Muestra las canciones de una playlist."""
-        nombre = nombre.strip()[:50]
-        filas = db.playlist_tracks(ctx.guild.id, nombre)
-        if not filas:
-            return await ctx.send(f"❌ No existe la playlist **{nombre}**.")
-
-        lineas = [f"`{i}.` {fila['title']}" for i, fila in enumerate(filas, 1)]
-        embed = discord.Embed(
-            title=f"🎧 {nombre}",
-            description="\n".join(lineas)[:4000],
-            color=discord.Color.green(),
-        )
-        await ctx.send(embed=embed)
-
-    @playlist.command(name='delete', aliases=['borrar', 'eliminar'])
-    async def playlist_delete(self, ctx: commands.Context, *, nombre: str):
-        """Elimina una playlist guardada."""
-        nombre = nombre.strip()[:50]
-        cantidad = db.playlist_delete(ctx.guild.id, nombre)
-        if not cantidad:
-            return await ctx.send(f"❌ No existe la playlist **{nombre}**.")
-        await ctx.send(f"🗑️ Playlist **{nombre}** eliminada (**{cantidad}** canción(es)).")
-
-    @playlist.command(name='add', aliases=['agregar', 'añadir'])
-    async def playlist_add(self, ctx: commands.Context, nombre: str, *, consulta: str | None = None):
-        """Agrega la cola actual (o una búsqueda) a una playlist. Uso: !playlist add <nombre> [canción]"""
-        nombre = nombre.strip()[:50]
-        state = self._state(ctx.guild.id)
-        pistas = []
-
-        if consulta:
-            async with ctx.typing():
-                resultados = await self._buscar(consulta, 1)
-            if not resultados:
-                return await ctx.send("❌ No se encontró la canción.")
-            r = resultados[0]
-            url = r.get('webpage_url') or r.get('url') or f"https://www.youtube.com/watch?v={r.get('id')}"
-            pistas.append((url, r.get('title', 'Canción')))
-        else:
-            if state.current:
-                pistas.append((state.current.query, state.current.title))
-            for pista in state.queue:
-                pistas.append((pista.query, pista.title))
-            if not pistas:
-                return await ctx.send("📭 No hay nada para agregar (cola vacía).")
-
-        for query, title in pistas:
-            db.playlist_add(ctx.guild.id, nombre, query, title)
-
-        total = len(db.playlist_tracks(ctx.guild.id, nombre))
-        await ctx.send(f"➕ Agregadas **{len(pistas)}** canción(es) a **{nombre}** (total: **{total}**).")
-
-    @playlist.command(name='remove', aliases=['quitar', 'rm'])
-    async def playlist_remove(self, ctx: commands.Context, nombre: str, posicion: int):
-        """Quita una canción de una playlist. Uso: !playlist remove <nombre> <n>"""
-        nombre = nombre.strip()[:50]
-        filas = db.playlist_tracks(ctx.guild.id, nombre)
-        if not filas:
-            return await ctx.send(f"❌ No existe la playlist **{nombre}**.")
-        if not (1 <= posicion <= len(filas)):
-            return await ctx.send(f"❌ Posición inválida. La playlist tiene **{len(filas)}** canción(es).")
-
-        quitada = filas[posicion - 1]
-        db.playlist_remove_at(ctx.guild.id, nombre, posicion)
-        await ctx.send(f"🗑️ Quitada de **{nombre}**: **{quitada['title']}**")
 
     @commands.command(name='remove', aliases=['quitar', 'rm'])
     async def remove(self, ctx: commands.Context, posicion: int):
@@ -1099,12 +1188,10 @@ class Musica(commands.Cog):
             return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
         lista = list(state.queue)
-
         if not lista:
             return await ctx.send("📭 La cola está vacía.")
         if not (1 <= posicion <= len(lista)):
             return await ctx.send(f"❌ Posición inválida. La cola tiene **{len(lista)}** canción(es).")
-
         quitada = lista.pop(posicion - 1)
         state.queue = deque(lista)
         await ctx.send(f"🗑️ Quitada de la cola: **{quitada.title}**")
@@ -1116,16 +1203,13 @@ class Musica(commands.Cog):
             return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
         lista = list(state.queue)
-
         if not lista:
             return await ctx.send("📭 La cola está vacía.")
         total = len(lista)
         if not (1 <= desde <= total and 1 <= hacia <= total):
             return await ctx.send(f"❌ Posiciones inválidas. La cola tiene **{total}** canción(es).")
-
         if desde == hacia:
             return await ctx.send("🤷 Esa canción ya está en esa posición.")
-
         item = lista.pop(desde - 1)
         lista.insert(hacia - 1, item)
         state.queue = deque(lista)
@@ -1140,9 +1224,8 @@ class Musica(commands.Cog):
         cantidad = len(state.queue)
         if not cantidad:
             return await ctx.send("📭 La cola ya está vacía.")
-
         state.queue.clear()
-        await ctx.send(f"🧹 Cola limpiada (**{cantidad}** canción(es) eliminadas). Sigue sonando la actual.")
+        await ctx.send(f"🧹 Cola limpiada (**{cantidad}** canción(es) eliminadas).")
 
     @commands.command(name='shuffle', aliases=['mezclar', 'aleatorio'])
     async def shuffle(self, ctx: commands.Context):
@@ -1153,42 +1236,9 @@ class Musica(commands.Cog):
         lista = list(state.queue)
         if len(lista) < 2:
             return await ctx.send("📭 Necesitás al menos 2 canciones en la cola para mezclar.")
-
         random.shuffle(lista)
         state.queue = deque(lista)
         await ctx.send(f"🔀 Cola mezclada (**{len(lista)}** canciones).")
-
-    @commands.command(name='seek', aliases=['adelantar'])
-    async def seek(self, ctx: commands.Context, tiempo: str):
-        """Adelanta la canción. Uso: !seek 90 | 1:30 | 1:02:03"""
-        if not self._puede_controlar(ctx):
-            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
-        state = self._state(ctx.guild.id)
-        vc = ctx.guild.voice_client
-        if not vc or not state.current:
-            return await ctx.send("❌ No hay música reproduciéndose.")
-
-        try:
-            segundos = self._parse_tiempo(tiempo)
-        except ValueError:
-            return await ctx.send("❌ Tiempo inválido. Ejemplos: `90`, `1:30`, `1:02:03`.")
-        if segundos < 0:
-            return await ctx.send("❌ El tiempo no puede ser negativo.")
-
-        duracion = state.current.duration or 0
-        if duracion and segundos >= duracion:
-            return await ctx.send(f"❌ La canción dura **{self._fmt(duracion)}**.")
-
-        async with ctx.typing():
-            source = await self._reextract(state.current, seek=segundos)
-        if source is None:
-            return await ctx.send("❌ No se pudo hacer seek.")
-
-        source.user_id = getattr(state.current, 'user_id', None)
-        state.current = source
-        self._play(vc, source, ctx.guild.id, offset=segundos)
-        await self._start_panel(ctx.guild.id)
-        await ctx.send(f"⏩ Saltando a **{self._fmt(segundos)}** de **{source.title}**")
 
     @commands.command(name='autoplay', aliases=['radio', 'automatico', 'automático'])
     async def autoplay(self, ctx: commands.Context, modo: str | None = None):
@@ -1196,7 +1246,6 @@ class Musica(commands.Cog):
         if not self._puede_controlar(ctx):
             return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
-
         if modo is None:
             state.autoplay = not state.autoplay
         else:
@@ -1207,70 +1256,8 @@ class Musica(commands.Cog):
                 state.autoplay = False
             else:
                 return await ctx.send("❌ Usa `!autoplay on` o `!autoplay off`.")
-
         await self._refresh_panel(ctx.guild.id)
         await ctx.send(f"📻 Autoplay: **{'activado' if state.autoplay else 'desactivado'}**")
-
-    @commands.command(name='lyrics', aliases=['letra'])
-    async def lyrics(self, ctx: commands.Context, *, consulta: str | None = None):
-        """Muestra la letra de la canción actual o de una búsqueda. Uso: !lyrics [artista - canción]"""
-        state = self._state(ctx.guild.id)
-
-        if consulta:
-            if ' - ' in consulta:
-                artista, titulo = consulta.split(' - ', 1)
-            else:
-                artista, titulo = '', consulta
-        elif state.current:
-            artista = getattr(state.current, 'artist', '') or ''
-            titulo = self._limpiar_titulo(state.current.title)
-        else:
-            return await ctx.send("❌ No hay canción sonando. Usá `!lyrics <artista - canción>`.")
-
-        artista = artista.strip()
-        titulo = titulo.strip()
-        if not titulo:
-            return await ctx.send("❌ No pude identificar la canción.")
-
-        async with ctx.typing():
-            letra = await self._fetch_lyrics(artista, titulo)
-
-        if not letra:
-            return await ctx.send(f"❌ No encontré la letra de **{titulo}**.")
-
-        letra = letra.replace('\r\n', '\n').strip()
-        embed = discord.Embed(
-            title=f"🎤 {artista + ' - ' if artista else ''}{titulo}",
-            description=letra[:4000],
-            color=discord.Color.purple(),
-        )
-        if len(letra) > 4000:
-            embed.set_footer(text="Letra truncada (muy larga).")
-        await ctx.send(embed=embed)
-
-    @staticmethod
-    def _limpiar_titulo(titulo: str) -> str:
-        t = re.sub(r'[\(\[].*?[\)\]]', ' ', titulo)
-        t = re.sub(r'(?i)\b(official|video|audio|lyrics?|letra|hd|hq|remaster(ed)?|en vivo|live|visualizer)\b', ' ', t)
-        t = re.sub(r'\s+', ' ', t)
-        return t.strip(' -|/')
-
-    @staticmethod
-    async def _fetch_lyrics(artista: str, titulo: str) -> str | None:
-        if not artista:
-            artista = 'Various Artists'
-        url = f"https://api.lyrics.ovh/v1/{quote(artista)}/{quote(titulo)}"
-        timeout = aiohttp.ClientTimeout(total=15)
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as sesion:
-                async with sesion.get(url) as resp:
-                    if resp.status != 200:
-                        return None
-                    datos = await resp.json(content_type=None)
-                    return datos.get('lyrics')
-        except Exception as e:
-            print(f'⚠️ Error buscando letra: {e}')
-            return None
 
     @commands.command(name='stop', aliases=['detener'])
     async def stop(self, ctx: commands.Context):
@@ -1280,7 +1267,6 @@ class Musica(commands.Cog):
         vc = ctx.guild.voice_client
         if not vc:
             return await ctx.send("❌ El bot no está conectado a un canal de voz.")
-
         state = self._state(ctx.guild.id)
         self._stop_panel(state)
         state.queue.clear()
@@ -1305,7 +1291,6 @@ class Musica(commands.Cog):
             'one': 'one', 'una': 'one', 'cancion': 'one', 'canción': 'one', 'single': 'one',
             'all': 'all', 'todo': 'all', 'cola': 'all', 'queue': 'all',
         }
-
         if modo is None:
             state.loop = orden[(orden.index(state.loop) + 1) % len(orden)]
         else:
@@ -1313,28 +1298,9 @@ class Musica(commands.Cog):
             if not clave:
                 return await ctx.send("❌ Modo inválido. Usa: `off`, `one` o `all`.")
             state.loop = clave
-
-        iconos = {
-            'off': '➡️ Desactivado',
-            'one': '🔂 Repetir canción',
-            'all': '🔁 Repetir cola',
-        }
+        iconos = {'off': '➡️ Desactivado', 'one': '🔂 Repetir canción', 'all': '🔁 Repetir cola'}
         await self._refresh_panel(ctx.guild.id)
         await ctx.send(f"🔁 Loop: **{iconos[state.loop]}**")
-
-    @commands.command(name='volumen', aliases=['vol'])
-    async def volumen(self, ctx: commands.Context, vol: int):
-        """Ajusta el volumen de 0 a 100."""
-        if not self._puede_controlar(ctx):
-            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
-        state = self._state(ctx.guild.id)
-        if not state.current:
-            return await ctx.send("❌ No hay música reproduciéndose.")
-
-        vol = max(0, min(100, vol))
-        state.current.volume = vol / 100
-        await self._refresh_panel(ctx.guild.id)
-        await ctx.send(f"🔊 Volumen: **{vol}%**")
 
 
 async def setup(bot: commands.Bot):
