@@ -4,7 +4,7 @@ Multifunctional Discord bot with YouTube music playback, playlists, live playbac
 
 ## Features
 
-- **Music** — YouTube playback with search menu, queue management, loop modes, autoplay, seek, live panel and volume control.
+- **Music** — YouTube playback with search menu, queue management, loop modes, radio-based autoplay, seek, live panel and volume control.
 - **Playlists & history** — Save/load playlists and keep the last 50 played tracks per server (SQLite).
 - **Lyrics** — Fetch lyrics for the current song or any `Artist - Song`.
 - **DJ permissions** — Restrict playback controls to admins, a DJ role or members in the bot's voice channel.
@@ -19,7 +19,7 @@ Multifunctional Discord bot with YouTube music playback, playlists, live playbac
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `!join` | `!conectar` | Connect the bot to your voice channel |
-| `!play <search/URL>` | `!p`, `!reproducir` | Search (5 results menu) or play a URL |
+| `!play <search/URL>` | `!p`, `!reproducir` | Search (5 results menu), play a URL or load a YouTube / YT Music playlist (up to 100 tracks) |
 | `!pause` | `!pausar` | Pause playback |
 | `!resume` | `!reanudar` | Resume playback |
 | `!skip` | `!s`, `!saltar` | Skip to the next song |
@@ -28,7 +28,7 @@ Multifunctional Discord bot with YouTube music playback, playlists, live playbac
 | `!queue` | `!q`, `!cola` | Show the playback queue |
 | `!np` | `!nowplaying`, `!sonando` | Show the current song with progress |
 | `!loop [off\|one\|all]` | `!bucle`, `!repetir` | Cycle or set the loop mode |
-| `!autoplay [on\|off]` | `!radio`, `!automatico` | Toggle related-song autoplay |
+| `!autoplay [on\|off]` | `!radio`, `!automatico` | Toggle YouTube radio-based autoplay (related songs) |
 | `!volumen <0-100>` | `!vol` | Adjust the volume |
 | `!remove <n>` | `!quitar`, `!rm` | Remove a track from the queue |
 | `!move <from> <to>` | `!mover`, `!mv` | Move a track in the queue |
@@ -36,7 +36,7 @@ Multifunctional Discord bot with YouTube music playback, playlists, live playbac
 | `!shuffle` | `!mezclar`, `!aleatorio` | Shuffle the queue |
 | `!lyrics [artist - song]` | `!letra` | Show lyrics (current song if omitted) |
 
-The live panel updates every 5 seconds with a progress bar and buttons for pause/resume, skip, loop and stop.
+The live panel updates every 5 seconds with a progress bar and buttons for pause/resume, skip, queue (ephemeral), loop and stop. A fresh panel is posted at the start of every song.
 
 ### Playlists
 | Command | Aliases | Description |

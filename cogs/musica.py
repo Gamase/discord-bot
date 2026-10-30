@@ -3,7 +3,7 @@ import random
 import re
 import time
 from collections import deque
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 import aiohttp
 import discord
@@ -28,6 +28,8 @@ FFMPEG_OPTIONS = {
     'options': '-vn',
 }
 
+MAX_PLAYLIST = 100
+
 ytdl = yt_dlp.YoutubeDL(YTDL_OPTIONS)
 
 
@@ -35,6 +37,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source: discord.AudioSource, *, data: dict, volume: float = 0.5):
         super().__init__(source, volume)
         self.title: str = data.get('title', 'Desconocido')
+        self.video_id: str = data.get('id') or ''
         self.webpage_url: str = data.get('webpage_url', '')
         self.duration: int | None = data.get('duration')
         self.thumbnail: str | None = data.get('thumbnail')
@@ -143,6 +146,16 @@ class PanelView(ui.View):
         await interaction.response.defer()
         vc.stop()
 
+    @ui.button(emoji='📋', style=discord.ButtonStyle.secondary)
+    async def cola(self, interaction: discord.Interaction, button: ui.Button):
+        state = self._state()
+        embed = self.cog._queue_embed(state)
+        if embed is None:
+            return await interaction.response.send_message(
+                "📭 La cola está vacía.", ephemeral=True
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @ui.button(emoji='🔁', style=discord.ButtonStyle.secondary)
     async def loop(self, interaction: discord.Interaction, button: ui.Button):
         state = self._state()
@@ -233,6 +246,32 @@ class Musica(commands.Cog):
         return t.startswith(('http://', 'https://', 'www.'))
 
     @staticmethod
+    def _es_playlist(url: str) -> bool:
+        try:
+            partes = urlparse(url)
+        except Exception:
+            return False
+        query = parse_qs(partes.query)
+        if 'list' in query and 'v' not in query:
+            return True
+        return any(ruta in partes.path for ruta in ('/playlist', '/album', '/browse'))
+
+    @staticmethod
+    def _video_id(url: str) -> str:
+        if not url:
+            return ''
+        try:
+            partes = urlparse(url)
+        except Exception:
+            return ''
+        query = parse_qs(partes.query)
+        if 'v' in query:
+            return query['v'][0]
+        if partes.netloc.endswith('youtu.be'):
+            return partes.path.lstrip('/')
+        return ''
+
+    @staticmethod
     def _parse_tiempo(texto: str) -> int:
         texto = texto.strip()
         if ':' in texto:
@@ -263,16 +302,37 @@ class Musica(commands.Cog):
         actual = state.current
         if actual is None:
             return False
+
+        actual_id = getattr(actual, 'video_id', '') or self._video_id(actual.webpage_url or actual.query)
+        if actual_id:
+            state.auto_seen.add(actual_id)
         if actual.query:
             state.auto_seen.add(actual.query)
 
-        resultados = await self._buscar(actual.title, 8)
+        resultados = []
+        if actual_id:
+            resultados = await self._extraer_radio(actual_id, 20)
+        if not resultados:
+            consulta = ' '.join(
+                filtro for filtro in (
+                    getattr(actual, 'artist', ''),
+                    self._limpiar_titulo(actual.title),
+                ) if filtro
+            )
+            resultados = await self._buscar(consulta or actual.title, 8)
+
         agregadas = 0
         for resultado in resultados:
-            url = resultado.get('url') or resultado.get('webpage_url') or resultado.get('id')
-            if not url or url in state.auto_seen:
+            rid = resultado.get('id') or ''
+            url = resultado.get('url') or resultado.get('webpage_url')
+            if not url and rid:
+                url = f"https://www.youtube.com/watch?v={rid}"
+            if not url:
                 continue
-            state.auto_seen.add(url)
+            clave = rid or url
+            if clave in state.auto_seen:
+                continue
+            state.auto_seen.add(clave)
             state.queue.append(
                 PendingTrack(
                     url,
@@ -307,6 +367,91 @@ class Musica(commands.Cog):
         except Exception as e:
             print(f'❌ Error buscando "{query}": {e}')
             return []
+
+    async def _extraer_playlist(self, url: str) -> dict | None:
+        opciones = dict(YTDL_OPTIONS)
+        opciones.update({
+            'extract_flat': 'in_playlist',
+            'skip_download': True,
+            'noplaylist': False,
+            'ignoreerrors': True,
+            'playlistend': MAX_PLAYLIST,
+        })
+
+        def _run():
+            with yt_dlp.YoutubeDL(opciones) as y:
+                return y.extract_info(url, download=False)
+
+        try:
+            return await self.bot.loop.run_in_executor(None, _run)
+        except Exception as e:
+            print(f'❌ Error extrayendo playlist: {e}')
+            return None
+
+    async def _extraer_radio(self, video_id: str, limite: int = 20) -> list[dict]:
+        url = f"https://www.youtube.com/watch?v={video_id}&list=RD{video_id}"
+        opciones = dict(YTDL_OPTIONS)
+        opciones.update({
+            'extract_flat': 'in_playlist',
+            'skip_download': True,
+            'noplaylist': False,
+            'ignoreerrors': True,
+            'playlistend': limite,
+        })
+
+        def _run():
+            with yt_dlp.YoutubeDL(opciones) as y:
+                datos = y.extract_info(url, download=False)
+            return [e for e in (datos.get('entries') or []) if e] if datos else []
+
+        try:
+            return await self.bot.loop.run_in_executor(None, _run)
+        except Exception as e:
+            print(f'⚠️ Autoplay radio falló: {e}')
+            return []
+
+    async def _cargar_playlist(self, ctx: commands.Context, url: str):
+        async with ctx.typing():
+            info = await self._extraer_playlist(url)
+
+        if not info:
+            return await ctx.send("❌ No se pudo leer la playlist.")
+
+        entradas = [e for e in (info.get('entries') or []) if e]
+        pistas = []
+        for entrada in entradas:
+            vid = entrada.get('id')
+            enlace = entrada.get('url') or entrada.get('webpage_url')
+            if vid:
+                consulta = f"https://www.youtube.com/watch?v={vid}"
+            elif enlace:
+                consulta = enlace if enlace.startswith('http') else f"https://www.youtube.com/watch?v={enlace}"
+            else:
+                continue
+            pistas.append(PendingTrack(consulta, entrada.get('title') or 'Desconocido', ctx.author.id))
+
+        if not pistas:
+            return await ctx.send("❌ La playlist está vacía o no tiene canciones disponibles.")
+
+        state = self._state(ctx.guild.id)
+        state.channel = ctx.channel
+        vc = ctx.guild.voice_client
+        if vc and vc.channel:
+            state.voice_channel_id = vc.channel.id
+
+        titulo = info.get('title') or 'Playlist'
+        state.queue.extend(pistas)
+
+        if vc and (vc.is_playing() or vc.is_paused()):
+            await ctx.send(f"✅ Playlist **{titulo}** agregada: **{len(pistas)}** canción(es).")
+        else:
+            await self._play_next(ctx.guild.id)
+            if state.current is None:
+                return await ctx.send(f"❌ No se pudo reproducir ninguna canción de **{titulo}**.")
+            await ctx.send(f"▶️ Playlist **{titulo}**: **{len(pistas)}** canción(es).")
+
+        if len(entradas) >= MAX_PLAYLIST:
+            await ctx.send(f"ℹ️ Se cargaron solo las primeras **{MAX_PLAYLIST}** canciones.")
 
     def _embed_busqueda(self, query: str, resultados: list[dict]) -> discord.Embed:
         embed = discord.Embed(
@@ -438,6 +583,22 @@ class Musica(commands.Cog):
         ahora = state.paused_at if state.paused_at is not None else time.monotonic()
         return max(0.0, ahora - state.started_at - state.paused_total)
 
+    def _queue_embed(self, state: GuildState) -> discord.Embed | None:
+        if not state.current and not state.queue:
+            return None
+        embed = discord.Embed(title="🎵 Cola de Reproducción", color=discord.Color.green())
+        if state.current:
+            embed.add_field(
+                name="▶️ Reproduciendo ahora",
+                value=f"**{state.current.title}**",
+                inline=False,
+            )
+        if state.queue:
+            lista = "\n".join(f"`{i + 1}.` {t.title}" for i, t in enumerate(state.queue))
+            embed.add_field(name="📋 En cola", value=lista[:1024], inline=False)
+        embed.set_footer(text=f"{len(state.queue)} canción(es) en espera")
+        return embed
+
     def _panel_embed(self, state: GuildState) -> discord.Embed:
         src = state.current
         if src is None:
@@ -467,6 +628,7 @@ class Musica(commands.Cog):
 
     async def _panel_loop(self, guild_id: int):
         state = self._state(guild_id)
+        inactivo = 0
         try:
             while True:
                 await asyncio.sleep(5)
@@ -475,7 +637,11 @@ class Musica(commands.Cog):
                 if not vc or not state.current or not state.panel_msg:
                     return
                 if not vc.is_playing() and not vc.is_paused():
-                    return
+                    inactivo += 1
+                    if inactivo >= 6:
+                        return
+                else:
+                    inactivo = 0
                 try:
                     await state.panel_msg.edit(embed=self._panel_embed(state))
                 except discord.NotFound:
@@ -498,7 +664,7 @@ class Musica(commands.Cog):
         except Exception:
             pass
 
-    async def _start_panel(self, guild_id: int):
+    async def _start_panel(self, guild_id: int, nuevo: bool = False):
         state = self._state(guild_id)
         if state.panel_task and not state.panel_task.done():
             state.panel_task.cancel()
@@ -506,6 +672,13 @@ class Musica(commands.Cog):
         canal_id = getattr(state.channel, 'id', None)
         if state.panel_msg and state.panel_channel_id != canal_id:
             state.panel_msg = None
+
+        if nuevo and state.panel_msg is not None:
+            try:
+                await state.panel_msg.delete()
+                state.panel_msg = None
+            except Exception:
+                pass
 
         embed = self._panel_embed(state)
         view = PanelView(self, guild_id)
@@ -571,7 +744,7 @@ class Musica(commands.Cog):
                 if source:
                     state.current = source
                     self._play(vc, source, guild_id)
-                    await self._start_panel(guild_id)
+                    await self._start_panel(guild_id, nuevo=True)
                     return
             elif state.loop == 'all':
                 nueva = await self._reextract(state.current)
@@ -602,7 +775,7 @@ class Musica(commands.Cog):
         try:
             self._play(vc, state.current, guild_id)
             self._record_history(guild_id, state.current)
-            await self._start_panel(guild_id)
+            await self._start_panel(guild_id, nuevo=True)
         except Exception as e:
             print(f'❌ Error en _play_next: {e}')
             state.current = None
@@ -627,7 +800,7 @@ class Musica(commands.Cog):
 
     @commands.command(name='play', aliases=['p', 'reproducir'])
     async def play(self, ctx: commands.Context, *, query: str):
-        """Reproduce música. Acepta URL o búsqueda por nombre."""
+        """Reproduce música. Acepta URL, playlist de YouTube/YT Music o búsqueda."""
         if not ctx.author.voice:
             return await ctx.send("❌ Debes estar en un canal de voz.")
 
@@ -641,6 +814,8 @@ class Musica(commands.Cog):
             state.voice_channel_id = vc.channel.id
 
         if self._es_url(query):
+            if self._es_playlist(query):
+                return await self._cargar_playlist(ctx, query)
             async with ctx.typing():
                 try:
                     source = await YTDLSource.from_url(query, loop=self.bot.loop)
@@ -707,25 +882,9 @@ class Musica(commands.Cog):
     @commands.command(name='queue', aliases=['q', 'cola'])
     async def queue(self, ctx: commands.Context):
         """Muestra la cola de reproducción."""
-        state = self._state(ctx.guild.id)
-
-        if not state.current and not state.queue:
+        embed = self._queue_embed(self._state(ctx.guild.id))
+        if embed is None:
             return await ctx.send("📭 La cola está vacía.")
-
-        embed = discord.Embed(title="🎵 Cola de Reproducción", color=discord.Color.green())
-
-        if state.current:
-            embed.add_field(
-                name="▶️ Reproduciendo ahora",
-                value=f"**{state.current.title}**",
-                inline=False,
-            )
-
-        if state.queue:
-            lista = "\n".join(f"`{i + 1}.` {t.title}" for i, t in enumerate(state.queue))
-            embed.add_field(name="📋 En cola", value=lista[:1024], inline=False)
-
-        embed.set_footer(text=f"{len(state.queue)} canción(es) en espera")
         await ctx.send(embed=embed)
 
     @commands.command(name='np', aliases=['nowplaying', 'sonando'])
