@@ -25,6 +25,7 @@ class IA(commands.Cog):
         self.historial: dict[int, list[dict]] = defaultdict(list)
 
     @commands.command(name='ia')
+    @commands.cooldown(3, 60, commands.BucketType.user)
     async def ia(self, ctx: commands.Context, *, pregunta: str):
         """Pregunta algo a la IA. Uso: !ia <pregunta>"""
         historial = self.historial[ctx.author.id]
@@ -40,7 +41,8 @@ class IA(commands.Cog):
                 )
                 respuesta = response.choices[0].message.content or "No obtuve respuesta, intenta de nuevo."
             except Exception as e:
-                return await ctx.send(f"❌ Error con la IA: {e}")
+                print(f'❌ Error IA: {e}')
+                return await ctx.send("❌ La IA falló, intenta de nuevo.")
 
         historial.append({"role": "assistant", "content": respuesta})
 

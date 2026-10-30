@@ -17,7 +17,11 @@ from db import init_db
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(
+    command_prefix='!',
+    intents=intents,
+    allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=True),
+)
 bot.remove_command('help')
 
 COGS = ['cogs.general', 'cogs.recordatorio', 'cogs.musica', 'cogs.voz', 'cogs.ia']
@@ -49,14 +53,18 @@ async def avisar_en_linea():
 @bot.event
 async def on_message(message: discord.Message):
     if not message.author.bot:
-        print(f'[DEBUG] {message.author} ({message.guild}/{message.channel}): {message.content}')
-    await bot.process_commands(message)
+        await bot.process_commands(message)
 
 
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
-    print(f'[ERROR] Comando: {ctx.message.content!r} | Autor: {ctx.author}')
-    traceback.print_exception(type(error), error, error.__traceback__)
+    if isinstance(error, commands.NotOwner):
+        await ctx.send("❌ Solo el dueño del bot puede usar este comando.")
+    elif isinstance(error, commands.CommandOnCooldown):
+        await ctx.send(f"⏳ Espera {error.retry_after:.0f}s.")
+    else:
+        print(f'[ERROR] Comando: {ctx.message.content!r} | Autor: {ctx.author}')
+        traceback.print_exception(type(error), error, error.__traceback__)
 
 
 @bot.event

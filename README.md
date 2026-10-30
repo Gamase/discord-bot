@@ -133,6 +133,7 @@ DJ_ROLE_ID=0
 PRECIO=60
 DIA_RECORDATORIO=6
 AMIGOS_IDS=id1,id2,id3
+CLABE=tu_clabe
 GROQ_API_KEY=your_groq_api_key
 GROQ_MODEL=openai/gpt-oss-120b
 TTS_VOICE=es-MX-DaliaNeural

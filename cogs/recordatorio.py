@@ -46,7 +46,7 @@ class Recordatorio(commands.Cog):
             f"¡Paguen el YOUTUBE PREMIUM PERRAAAAS!\n\n"
             f"💰 **Precio por persona:** ${Config.PRECIO}\n"
             f"📅 **Para el mes:** {hoy.strftime('%B %Y')}\n"
-            f"💳 **Método de pago:** CLABE INTERBANCARIA: 012180015553970603\n"
+            f"💳 **Método de pago:** CLABE INTERBANCARIA: {Config.CLABE}\n"
         )
 
     @tasks.loop(hours=24)
@@ -77,6 +77,7 @@ class Recordatorio(commands.Cog):
         name='forzar_recordatorio',
         description='Envía un recordatorio de pago de YouTube Premium manualmente'
     )
+    @commands.is_owner()
     async def forzar_recordatorio(self, ctx: commands.Context):
         await ctx.send(self._build_mensaje(manual=True))
 

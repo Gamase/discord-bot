@@ -11,5 +11,7 @@ class Config:
     PRECIO: int = int(os.getenv('PRECIO', '60'))
     DIA_RECORDATORIO: int = int(os.getenv('DIA_RECORDATORIO', '6'))
 
+    CLABE: str = os.getenv('CLABE', '')
+
     _raw = os.getenv('AMIGOS_IDS', '')
     AMIGOS: list[str] = [f"<@{uid.strip()}>" for uid in _raw.split(',') if uid.strip()]
