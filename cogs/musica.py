@@ -9,6 +9,7 @@ from discord import ui
 from discord.ext import commands, tasks
 
 import db
+from config import Config
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -82,6 +83,8 @@ class GuildState:
         self.panel_task: asyncio.Task | None = None
         self.voice_channel_id: int | None = None
         self.last_reconnect: float = 0.0
+        self.autoplay: bool = False
+        self.auto_seen: set[str] = set()
 
 
 class PanelView(ui.View):
@@ -92,6 +95,16 @@ class PanelView(ui.View):
 
     def _state(self) -> GuildState:
         return self.cog._state(self.guild_id)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+            return True
+        if self.cog._es_dj_member(interaction.user, interaction.guild):
+            return True
+        await interaction.response.send_message(
+            "❌ Solo el DJ (rol o canal de voz) puede usar los controles.", ephemeral=True
+        )
+        return False
 
     @ui.button(emoji='⏯️', style=discord.ButtonStyle.primary)
     async def toggle(self, interaction: discord.Interaction, button: ui.Button):
@@ -214,6 +227,62 @@ class Musica(commands.Cog):
     def _es_url(texto: str) -> bool:
         t = texto.strip().lower()
         return t.startswith(('http://', 'https://', 'www.'))
+
+    @staticmethod
+    def _parse_tiempo(texto: str) -> int:
+        texto = texto.strip()
+        if ':' in texto:
+            total = 0
+            for parte in texto.split(':'):
+                total = total * 60 + int(parte)
+            return total
+        return int(texto)
+
+    def _es_dj_member(self, member: discord.Member, guild: discord.Guild) -> bool:
+        if member.guild_permissions.manage_guild or member.id == guild.owner_id:
+            return True
+        rol_id = Config.DJ_ROLE_ID
+        if rol_id and any(rol.id == rol_id for rol in member.roles):
+            return True
+        vc = guild.voice_client
+        if vc and vc.channel and member.voice and member.voice.channel:
+            return member.voice.channel.id == vc.channel.id
+        return False
+
+    def _puede_controlar(self, ctx: commands.Context) -> bool:
+        if not isinstance(ctx.author, discord.Member):
+            return False
+        return self._es_dj_member(ctx.author, ctx.guild)
+
+    async def _autoencolar(self, guild_id: int) -> bool:
+        state = self._state(guild_id)
+        actual = state.current
+        if actual is None:
+            return False
+        if actual.query:
+            state.auto_seen.add(actual.query)
+
+        resultados = await self._buscar(actual.title, 8)
+        agregadas = 0
+        for resultado in resultados:
+            url = resultado.get('url') or resultado.get('webpage_url') or resultado.get('id')
+            if not url or url in state.auto_seen:
+                continue
+            state.auto_seen.add(url)
+            state.queue.append(
+                PendingTrack(
+                    url,
+                    resultado.get('title') or 'Desconocido',
+                    getattr(actual, 'user_id', None),
+                )
+            )
+            agregadas += 1
+            if agregadas >= 3:
+                break
+
+        if agregadas:
+            print(f'📻 Autoplay: {agregadas} canción(es) agregadas')
+        return agregadas > 0
 
     async def _buscar(self, query: str, n: int = 5) -> list[dict]:
         opciones = dict(YTDL_OPTIONS)
@@ -386,7 +455,8 @@ class Musica(commands.Cog):
             color=discord.Color.blurple(),
         )
         embed.add_field(name="Progreso", value=progreso, inline=False)
-        embed.set_footer(text=f"Loop {icono}  •  Volumen {int(src.volume * 100)}%")
+        auto = '📻' if state.autoplay else '—'
+        embed.set_footer(text=f"Loop {icono}  •  Vol {int(src.volume * 100)}%  •  Autoplay {auto}")
         if src.thumbnail:
             embed.set_thumbnail(url=src.thumbnail)
         return embed
@@ -504,6 +574,9 @@ class Musica(commands.Cog):
                 if nueva:
                     state.queue.append(nueva)
 
+        if not state.queue and state.autoplay and state.current:
+            await self._autoencolar(guild_id)
+
         if not state.queue:
             state.current = None
             self._stop_panel(state)
@@ -584,6 +657,8 @@ class Musica(commands.Cog):
     @commands.command(name='pause', aliases=['pausar'])
     async def pause(self, ctx: commands.Context):
         """Pausa la reproducción actual."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         vc = ctx.guild.voice_client
         if vc and vc.is_playing():
             state = self._state(ctx.guild.id)
@@ -598,6 +673,8 @@ class Musica(commands.Cog):
     @commands.command(name='resume', aliases=['reanudar'])
     async def resume(self, ctx: commands.Context):
         """Reanuda la reproducción pausada."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         vc = ctx.guild.voice_client
         if vc and vc.is_paused():
             state = self._state(ctx.guild.id)
@@ -613,6 +690,8 @@ class Musica(commands.Cog):
     @commands.command(name='skip', aliases=['s', 'saltar'])
     async def skip(self, ctx: commands.Context):
         """Salta a la siguiente canción en la cola."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         vc = ctx.guild.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             self._state(ctx.guild.id).skip_next = True
@@ -810,6 +889,8 @@ class Musica(commands.Cog):
     @commands.command(name='remove', aliases=['quitar', 'rm'])
     async def remove(self, ctx: commands.Context, posicion: int):
         """Quita una canción de la cola por su posición. Uso: !remove <n>"""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
         lista = list(state.queue)
 
@@ -825,6 +906,8 @@ class Musica(commands.Cog):
     @commands.command(name='move', aliases=['mover', 'mv'])
     async def move(self, ctx: commands.Context, desde: int, hacia: int):
         """Mueve una canción de posición en la cola. Uso: !move <de> <a>"""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
         lista = list(state.queue)
 
@@ -845,6 +928,8 @@ class Musica(commands.Cog):
     @commands.command(name='clear', aliases=['limpiar', 'vaciar'])
     async def clear(self, ctx: commands.Context):
         """Limpia la cola sin detener la canción actual."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
         cantidad = len(state.queue)
         if not cantidad:
@@ -856,6 +941,8 @@ class Musica(commands.Cog):
     @commands.command(name='shuffle', aliases=['mezclar', 'aleatorio'])
     async def shuffle(self, ctx: commands.Context):
         """Mezcla aleatoriamente la cola."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
         lista = list(state.queue)
         if len(lista) < 2:
@@ -865,9 +952,64 @@ class Musica(commands.Cog):
         state.queue = deque(lista)
         await ctx.send(f"🔀 Cola mezclada (**{len(lista)}** canciones).")
 
+    @commands.command(name='seek', aliases=['adelantar'])
+    async def seek(self, ctx: commands.Context, tiempo: str):
+        """Adelanta la canción. Uso: !seek 90 | 1:30 | 1:02:03"""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
+        state = self._state(ctx.guild.id)
+        vc = ctx.guild.voice_client
+        if not vc or not state.current:
+            return await ctx.send("❌ No hay música reproduciéndose.")
+
+        try:
+            segundos = self._parse_tiempo(tiempo)
+        except ValueError:
+            return await ctx.send("❌ Tiempo inválido. Ejemplos: `90`, `1:30`, `1:02:03`.")
+        if segundos < 0:
+            return await ctx.send("❌ El tiempo no puede ser negativo.")
+
+        duracion = state.current.duration or 0
+        if duracion and segundos >= duracion:
+            return await ctx.send(f"❌ La canción dura **{self._fmt(duracion)}**.")
+
+        async with ctx.typing():
+            source = await self._reextract(state.current, seek=segundos)
+        if source is None:
+            return await ctx.send("❌ No se pudo hacer seek.")
+
+        source.user_id = getattr(state.current, 'user_id', None)
+        state.current = source
+        self._play(vc, source, ctx.guild.id, offset=segundos)
+        await self._start_panel(ctx.guild.id)
+        await ctx.send(f"⏩ Saltando a **{self._fmt(segundos)}** de **{source.title}**")
+
+    @commands.command(name='autoplay', aliases=['radio', 'automatico', 'automático'])
+    async def autoplay(self, ctx: commands.Context, modo: str | None = None):
+        """Activa/desactiva el autoplay de canciones relacionadas."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
+        state = self._state(ctx.guild.id)
+
+        if modo is None:
+            state.autoplay = not state.autoplay
+        else:
+            m = modo.lower()
+            if m in ('on', 'si', 'sí', '1', 'activar', 'true'):
+                state.autoplay = True
+            elif m in ('off', 'no', '0', 'desactivar', 'false'):
+                state.autoplay = False
+            else:
+                return await ctx.send("❌ Usa `!autoplay on` o `!autoplay off`.")
+
+        await self._refresh_panel(ctx.guild.id)
+        await ctx.send(f"📻 Autoplay: **{'activado' if state.autoplay else 'desactivado'}**")
+
     @commands.command(name='stop', aliases=['detener'])
     async def stop(self, ctx: commands.Context):
         """Detiene la música, limpia la cola y desconecta el bot."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         vc = ctx.guild.voice_client
         if not vc:
             return await ctx.send("❌ El bot no está conectado a un canal de voz.")
@@ -887,6 +1029,8 @@ class Musica(commands.Cog):
     @commands.command(name='loop', aliases=['bucle', 'repetir'])
     async def loop(self, ctx: commands.Context, modo: str | None = None):
         """Cambia el modo de repetición: off, one (canción) o all (cola)."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
         orden = ['off', 'one', 'all']
         alias = {
@@ -914,6 +1058,8 @@ class Musica(commands.Cog):
     @commands.command(name='volumen', aliases=['vol'])
     async def volumen(self, ctx: commands.Context, vol: int):
         """Ajusta el volumen de 0 a 100."""
+        if not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede usar este comando.")
         state = self._state(ctx.guild.id)
         if not state.current:
             return await ctx.send("❌ No hay música reproduciéndose.")
