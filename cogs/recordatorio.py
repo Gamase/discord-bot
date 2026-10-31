@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 
@@ -5,6 +6,7 @@ import discord
 from discord.ext import commands, tasks
 
 import db
+from cogs.errores import reiniciar_loop, reportar_tarea_desde
 
 
 def _parse_duracion(texto: str) -> int:
@@ -52,12 +54,19 @@ class Recordatorio(commands.Cog):
                     except Exception as e:
                         print(f'⚠️ No se pudo enviar recordatorio #{rid}: {e}')
                 db.reminder_delete_by_id(rid)
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            print(f'❌ Error en revisar_recordatorios: {e}')
+            await reportar_tarea_desde(self.bot, 'recordatorio.revisar_recordatorios', e)
 
     @revisar_recordatorios.before_loop
     async def before_revisar(self):
         await self.bot.wait_until_ready()
+
+    @revisar_recordatorios.error
+    async def _error_revisar_recordatorios(self, error: Exception):
+        await reportar_tarea_desde(self.bot, 'recordatorio.revisar_recordatorios', error)
+        reiniciar_loop(self.revisar_recordatorios)
 
     @commands.command(name='recordar', aliases=['recuerdame', 'recuérdame'])
     async def recordar(self, ctx: commands.Context, tiempo: str, *, mensaje: str):

@@ -11,7 +11,9 @@ Bot de Discord multifuncional con reproducción de música de YouTube, panel de 
 - **Pagos** — Control de pagos mensuales con SQLite: recordatorio mensual con botón «Ya pagué», confirmación del admin y seguimiento cada 3 días a quienes faltan.
 - **Reminders** — Recordatorios flexibles por usuario (`!recordar 10m ...`).
 - **AI** — Chat con Groq (modelo configurable) con historial de conversación por usuario y cooldown de 3 usos/60s.
-- **Stability** — Reconexión automática de voz, heartbeat + watchdog, alertas de inicio/caída.
+- **Errores** — Manejo centralizado de errores de comandos, slash commands, eventos y tareas; DM al admin con traceback censurado y anti-spam por 10 minutos.
+- **Servidor** — Estado del teléfono (batería, temperatura, uptime, almacenamiento, RAM) y alertas con histéresis cuando la batería está baja o el equipo se calienta.
+- **Stability** — Reconexión automática de voz, heartbeat + watchdog, alertas de inicio/caída y loops que no mueren ante un error.
 
 ## Panel de reproducción
 
@@ -107,6 +109,27 @@ Cada botón muestra un mensaje efímero confirmando la acción realizada.
 | `!uptime` | `!encendido` | Muestra el tiempo de actividad |
 | `!stats` | `!info` | Servidores, usuarios, latencia y uptime |
 
+### Servidor (slash commands, solo admin)
+| Comando | Descripción |
+|---------|-------------|
+| `/servidor` | Batería, carga, temperatura, uptime del teléfono y del bot, almacenamiento, RAM y latencia |
+| `/umbrales` | Cambia los umbrales de alerta (`bateria_min`, `bateria_rearme`, `temp_max`, `temp_rearme`) |
+
+`/servidor` está pensado para el Huawei P30 con Termux y `termux-api`. Si el bot corre en Windows o `termux-battery-status` falla, el comando y el cog siguen funcionando y muestran `no disponible` en los campos del teléfono.
+
+El loop de monitoreo revisa cada 5 minutos. Avisa una sola vez por transición:
+
+- Batería menor a `20%` sin cargar; se rearma al llegar a `25%` o al empezar a cargar.
+- Temperatura mayor a `45 °C`; se rearma al bajar de `42 °C`.
+- También avisa cuando el valor vuelve a la normalidad después de una alerta.
+
+Los umbrales se guardan en la tabla `settings` (`servidor_bateria_min`, `servidor_bateria_rearme`, `servidor_temp_max`, `servidor_temp_rearme`) y se pueden cambiar con `/umbrales`.
+
+### Errores
+El cog de errores maneja comandos de prefijo, slash commands, eventos y tareas. Los errores esperados (comando inexistente, cooldown, permisos, argumentos) solo se le muestran al usuario. Los inesperados se envían al admin por DM con usuario, canal, hora de Tijuana y traceback censurado; si es muy largo, va como archivo `.txt`. Si el DM falla, usa el canal de respaldo.
+
+Los errores repetidos se agrupan con anti-spam: el primero avisa y las repeticiones se cuentan durante 10 minutos. Al cerrar la ventana se envía un resumen con el total, aunque no haya un error nuevo.
+
 ## DJ permissions
 
 Los controles de reproducción (`pause`, `resume`, `skip`, `stop`, `loop`, `remove`, `move`, `clear`, `shuffle`, `autoplay` y botones del panel) están disponibles para:
@@ -123,6 +146,7 @@ Si `DJ_ROLE_ID` es `0` (por defecto), solo admins/dueño y miembros en el canal 
 - FFmpeg instalado y disponible en `PATH`
 - Token de bot de Discord con el intent `message_content` habilitado
 - Groq API key (para el módulo de IA)
+- Opcional: Termux + `termux-api` para `/servidor` y las alertas del teléfono
 
 ## Installation
 
@@ -171,7 +195,7 @@ WATCHDOG_TIMEOUT=120
 | `DIA_RECORDATORIO` | Día del mes para el recordatorio (1–31; valor inicial guardado en la DB) |
 | `AMIGOS_IDS` | IDs que se usan para sembrar la lista de pagos la primera vez |
 | `CLABE` | CLABE interbancaria para el recordatorio de pago |
-| `ADMIN_ID` | Quien confirma pagos y usa los comandos de admin (por defecto, el dueño de la app del bot) |
+| `ADMIN_ID` | Quien confirma pagos, usa los comandos de admin y recibe errores/alertas por DM (por defecto, el dueño de la app del bot) |
 | `GUILD_ID` | Servidor donde se sincronizan los slash commands (por defecto, el servidor de `CANAL_ID`) |
 | `PAGOS_CANAL_ID` | Canal de respaldo para solicitudes si el DM al admin falla (por defecto `AVISO_CANAL_ID`) |
 | `GROQ_API_KEY` | API key de Groq ([console.groq.com](https://console.groq.com)) |
@@ -202,7 +226,17 @@ python main.py
 ## Operations
 
 - `main.py` escribe `heartbeat` cada 30 segundos.
-- `db.py` almacena playlists, historial, recordatorios y pagos en `bot.db` (SQLite, no se sube a git).
+- `db.py` almacena playlists, historial, recordatorios, pagos y umbrales en `bot.db` (SQLite, no se sube a git).
+- `run.sh` redirige la salida del bot a `bot.log`.
+- Los errores y alertas también se registran en `bot.log`; los secretos se censuran antes de enviarlos o imprimirlos.
+
+### Tests
+
+```bash
+python -m unittest discover -s tests -t . -v
+```
+
+Incluyen pruebas de censurado de secretos, anti-spam con ventana de 10 minutos y alertas del servidor con histéresis.
 
 ## Project Structure
 
@@ -213,12 +247,17 @@ discord-bot/
 ├── db.py                # Helpers SQLite (playlists, historial, recordatorios, pagos)
 ├── requirements.txt     # Dependencias principales
 ├── .env                 # Variables de entorno (no trackeado por git)
+├── tests/
+│   ├── test_errores.py  # Censurado de secretos y anti-spam
+│   └── test_servidor.py # Alertas de batería y temperatura con histéresis
 └── cogs/
+    ├── errores.py       # Errores de comandos, eventos, tareas y DM al admin
     ├── general.py       # Help, ping, uptime y stats
     ├── musica.py        # Reproducción YouTube, cola, panel con botones y playlists
     ├── voz.py           # TTS con Edge TTS / eSpeak
     ├── recordatorio.py  # Recordatorios por usuario
     ├── pagos.py         # Control de pagos mensuales, botones persistentes y slash commands
+    ├── servidor.py      # Estado del teléfono y alertas con histéresis
     └── ia.py            # Chat IA con Groq
 ```
 

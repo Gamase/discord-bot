@@ -1,7 +1,6 @@
 import asyncio
 import sys
 import time
-import traceback
 from pathlib import Path
 
 if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
@@ -24,7 +23,16 @@ bot = commands.Bot(
 )
 bot.remove_command('help')
 
-COGS = ['cogs.general', 'cogs.recordatorio', 'cogs.musica', 'cogs.voz', 'cogs.ia', 'cogs.pagos']
+COGS = [
+    'cogs.errores',
+    'cogs.general',
+    'cogs.recordatorio',
+    'cogs.musica',
+    'cogs.voz',
+    'cogs.ia',
+    'cogs.pagos',
+    'cogs.servidor',
+]
 
 HEARTBEAT = Path(__file__).resolve().parent / 'heartbeat'
 _anunciado = False
@@ -54,17 +62,6 @@ async def avisar_en_linea():
 async def on_message(message: discord.Message):
     if not message.author.bot:
         await bot.process_commands(message)
-
-
-@bot.event
-async def on_command_error(ctx: commands.Context, error: commands.CommandError):
-    if isinstance(error, commands.NotOwner):
-        await ctx.send("❌ Solo el dueño del bot puede usar este comando.")
-    elif isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(f"⏳ Espera {error.retry_after:.0f}s.")
-    else:
-        print(f'[ERROR] Comando: {ctx.message.content!r} | Autor: {ctx.author}')
-        traceback.print_exception(type(error), error, error.__traceback__)
 
 
 async def sincronizar_comandos():

@@ -12,6 +12,7 @@ from discord.ext import commands, tasks
 
 import db
 from config import Config
+from cogs.errores import reiniciar_loop, reportar_tarea_desde
 
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
@@ -778,6 +779,14 @@ class Musica(commands.Cog):
 
     @tasks.loop(seconds=15)
     async def _vigilar_voz(self):
+        try:
+            await self._vigilar_voz_cuerpo()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            await reportar_tarea_desde(self.bot, 'musica._vigilar_voz', e)
+
+    async def _vigilar_voz_cuerpo(self):
         ahora = time.monotonic()
         for guild_id, state in list(self._states.items()):
             if not state.current and not state.queue:
@@ -825,7 +834,8 @@ class Musica(commands.Cog):
 
     @_vigilar_voz.error
     async def _error_vigilar_voz(self, error: Exception):
-        print(f'❌ Error en _vigilar_voz: {error}')
+        await reportar_tarea_desde(self.bot, 'musica._vigilar_voz', error)
+        reiniciar_loop(self._vigilar_voz)
 
     @staticmethod
     def _fmt(seg: float) -> str:

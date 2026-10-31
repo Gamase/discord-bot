@@ -1,7 +1,6 @@
 import asyncio
 import calendar
 import re
-import traceback
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
@@ -11,6 +10,7 @@ from discord.ext import commands, tasks
 
 import db
 from config import Config
+from cogs.errores import reiniciar_loop, reportar_tarea_desde
 
 TZ = ZoneInfo('America/Tijuana')
 HORA_RECORDATORIO = dtime(hour=9, minute=0, tzinfo=TZ)
@@ -239,11 +239,21 @@ class Pagos(commands.Cog):
 
     @tasks.loop(time=HORA_RECORDATORIO)
     async def recordatorio(self):
-        await self._revisar()
+        try:
+            await self._revisar()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            await reportar_tarea_desde(self.bot, 'pagos.recordatorio', e)
 
     @recordatorio.before_loop
     async def _antes_recordatorio(self):
         await self.bot.wait_until_ready()
+
+    @recordatorio.error
+    async def _error_recordatorio(self, error: Exception):
+        await reportar_tarea_desde(self.bot, 'pagos.recordatorio', error)
+        reiniciar_loop(self.recordatorio)
 
     async def _revisar_al_arrancar(self):
         # tasks.loop(time=...) no corre al iniciar; si el bot arranca después de la
@@ -269,8 +279,7 @@ class Pagos(commands.Cog):
                 if dias >= DIAS_SEGUIMIENTO:
                     await self._enviar_recordatorio(mes, 'followup')
             except Exception as e:
-                print(f'❌ Error en recordatorio de pagos: {e}')
-                traceback.print_exc()
+                await reportar_tarea_desde(self.bot, 'pagos.recordatorio', e)
 
     async def _enviar_recordatorio(self, mes: str, tipo: str) -> int | None:
         """Devuelve a cuántos se mencionó (0 si nadie debe), o None si no se envió."""
@@ -429,16 +438,22 @@ class Pagos(commands.Cog):
 
     async def cog_app_command_error(self, interaction: discord.Interaction,
                                     error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.CheckFailure):
-            texto = "❌ Solo el admin puede usar este comando."
-        else:
-            print(f'❌ Error en /{interaction.command.name if interaction.command else "?"}: {error}')
-            traceback.print_exception(type(error), error, error.__traceback__)
+        errores = self.bot.get_cog('Errores')
+        if errores is None:
             texto = "❌ Ocurrió un error ejecutando el comando."
-        if interaction.response.is_done():
-            await interaction.followup.send(texto, ephemeral=True)
-        else:
-            await interaction.response.send_message(texto, ephemeral=True)
+            if interaction.response.is_done():
+                await interaction.followup.send(texto, ephemeral=True)
+            else:
+                await interaction.response.send_message(texto, ephemeral=True)
+            return
+
+        if isinstance(error, app_commands.CheckFailure):
+            await errores.responder_y_marcar(
+                interaction, error, "❌ Solo el admin puede usar este comando."
+            )
+            return
+
+        await errores.procesar_slash(interaction, error, desde_handler=True)
 
     @staticmethod
     async def _validar_mes(interaction: discord.Interaction, mes: str | None) -> str | None:
