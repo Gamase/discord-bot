@@ -14,12 +14,22 @@ from config import Config
 from cogs.errores import reiniciar_loop, reportar_tarea_desde
 
 TIMEOUT_TERMUX = 10
+RUTA_BATERIA = '/data/data/com.termux/files/usr/bin/termux-battery-status'
 DEFAULTS = {
     'servidor_bateria_min': '20',
     'servidor_bateria_rearme': '25',
     'servidor_temp_max': '45',
     'servidor_temp_rearme': '42',
 }
+
+_LOGS_UNA_VEZ: set[str] = set()
+
+
+def _log_una_vez(clave: str, mensaje: str):
+    if clave in _LOGS_UNA_VEZ:
+        return
+    _LOGS_UNA_VEZ.add(clave)
+    print(f'⚠️ Servidor: {mensaje}')
 
 
 def _a_float(valor) -> float | None:
@@ -58,17 +68,60 @@ def _fmt_uptime(segundos: float | None) -> str | None:
     return ' '.join(partes)
 
 
+def _uptime_sysinfo() -> float | None:
+    try:
+        import ctypes
+
+        class Sysinfo(ctypes.Structure):
+            _fields_ = [
+                ('uptime', ctypes.c_long),
+                ('loads', ctypes.c_ulong * 3),
+                ('totalram', ctypes.c_ulong),
+                ('freeram', ctypes.c_ulong),
+                ('sharedram', ctypes.c_ulong),
+                ('bufferram', ctypes.c_ulong),
+                ('totalswap', ctypes.c_ulong),
+                ('freeswap', ctypes.c_ulong),
+                ('procs', ctypes.c_ushort),
+                ('pad', ctypes.c_ushort),
+                ('totalhigh', ctypes.c_ulong),
+                ('freehigh', ctypes.c_ulong),
+                ('mem_unit', ctypes.c_uint),
+                ('_f', ctypes.c_char * 8),
+            ]
+
+        info = Sysinfo()
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.sysinfo(ctypes.byref(info)) == 0:
+            return float(info.uptime)
+    except (AttributeError, ImportError, OSError, ValueError):
+        return None
+    return None
+
+
 def _leer_uptime_telefono() -> float | None:
+    causa = None
     try:
         return float(Path('/proc/uptime').read_text().split()[0])
-    except (OSError, ValueError, IndexError):
-        return None
+    except (OSError, ValueError, IndexError) as e:
+        causa = e
+
+    valor = _uptime_sysinfo()
+    if valor is not None:
+        return valor
+
+    _log_una_vez(
+        'uptime',
+        f'no se pudo leer el uptime del teléfono ({causa or "sysinfo no disponible"})',
+    )
+    return None
 
 
 def _leer_memoria() -> dict | None:
     try:
         lineas = Path('/proc/meminfo').read_text().splitlines()
-    except OSError:
+    except OSError as e:
+        _log_una_vez('memoria', f'no se pudo leer /proc/meminfo: {e}')
         return None
     datos = {}
     for linea in lineas:
@@ -83,20 +136,26 @@ def _leer_memoria() -> dict | None:
     if disponible is None:
         disponible = sum(datos.get(clave, 0) for clave in ('MemFree', 'Buffers', 'Cached'))
     if not total:
+        _log_una_vez('memoria', '/proc/meminfo no contiene MemTotal')
         return None
     return {'total': total, 'disponible': disponible}
 
 
 def _leer_disco() -> dict | None:
     rutas = (os.environ.get('HOME'), str(Path.home()), '/')
+    ultimo_error = None
     for ruta in rutas:
         if not ruta:
             continue
         try:
             uso = shutil.disk_usage(ruta)
             return {'libre': uso.free, 'total': uso.total}
-        except OSError:
-            continue
+        except OSError as e:
+            ultimo_error = e
+    _log_una_vez(
+        'disco',
+        f'no se pudo leer el uso de disco ({ultimo_error or "sin rutas disponibles"})',
+    )
     return None
 
 
@@ -162,44 +221,62 @@ class Servidor(commands.Cog):
         return self._admin_cache
 
     @staticmethod
-    def _en_termux() -> bool:
-        if shutil.which('termux-battery-status') is None:
-            return False
-        prefix = os.environ.get('PREFIX', '')
-        return prefix.startswith('/data/data/com.termux') or os.path.isdir('/data/data/com.termux')
+    def _ruta_bateria() -> str | None:
+        candidatos = [shutil.which('termux-battery-status')]
+        prefix = os.environ.get('PREFIX')
+        if prefix:
+            candidatos.append(os.path.join(prefix, 'bin', 'termux-battery-status'))
+            candidatos.append(os.path.join(prefix, 'glibc', 'bin', 'termux-battery-status'))
+        candidatos.append(RUTA_BATERIA)
+        for ruta in dict.fromkeys(candidatos):
+            if ruta and os.path.isfile(ruta) and os.access(ruta, os.X_OK):
+                return ruta
+        return None
 
     async def _leer_bateria(self) -> dict | None:
-        if not self._en_termux():
+        ruta = self._ruta_bateria()
+        if ruta is None:
+            _log_una_vez(
+                'bateria',
+                f'termux-battery-status no encontrado; instala el paquete termux-api '
+                f'(busqué en PATH, $PREFIX/bin y {RUTA_BATERIA})',
+            )
             return None
+
         try:
             proceso = await asyncio.create_subprocess_exec(
-                'termux-battery-status',
+                ruta,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
         except (FileNotFoundError, OSError) as e:
-            print(f'⚠️ Servidor: no se pudo ejecutar termux-battery-status: {e}')
+            _log_una_vez('bateria', f'no se pudo ejecutar {ruta}: {e}')
             return None
 
         try:
-            salida, _ = await asyncio.wait_for(proceso.communicate(), timeout=TIMEOUT_TERMUX)
+            salida, error = await asyncio.wait_for(proceso.communicate(), timeout=TIMEOUT_TERMUX)
         except asyncio.TimeoutError:
             try:
                 proceso.kill()
             except ProcessLookupError:
                 pass
             await proceso.wait()
-            print('⚠️ Servidor: termux-battery-status no respondió en 10 s')
+            _log_una_vez('bateria', 'termux-battery-status no respondió en 10 s')
             return None
 
         if proceso.returncode != 0:
-            print(f'⚠️ Servidor: termux-battery-status terminó con código {proceso.returncode}')
+            detalle = error.decode('utf-8', errors='replace').strip()
+            _log_una_vez(
+                'bateria',
+                f'termux-battery-status terminó con código {proceso.returncode}: '
+                f'{detalle or "sin detalle"}',
+            )
             return None
 
         try:
             datos = json.loads(salida.decode('utf-8', errors='replace'))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            print(f'⚠️ Servidor: respuesta inválida de termux-battery-status: {e}')
+            _log_una_vez('bateria', f'respuesta inválida de termux-battery-status: {e}')
             return None
 
         estado = str(datos.get('status') or '').upper()
@@ -208,9 +285,14 @@ class Servidor(commands.Cog):
             enchufe in ('PLUGGED_AC', 'PLUGGED_USB', 'PLUGGED_WIRELESS')
             or estado in ('CHARGING', 'FULL')
         )
+        porcentaje = _a_float(datos.get('percentage'))
+        temperatura = _a_float(datos.get('temperature'))
+        if porcentaje is None and temperatura is None:
+            _log_una_vez('bateria', 'respuesta sin percentage ni temperature')
+            return None
         return {
-            'porcentaje': _a_float(datos.get('percentage')),
-            'temperatura': _a_float(datos.get('temperature')),
+            'porcentaje': porcentaje,
+            'temperatura': temperatura,
             'cargando': cargando,
         }
 
@@ -224,10 +306,9 @@ class Servidor(commands.Cog):
         return valores
 
     def _datos(self, bateria: dict | None) -> dict:
-        en_termux = self._en_termux()
-        memoria = _leer_memoria() if en_termux else None
-        disco = _leer_disco() if en_termux else None
-        uptime_tel = _leer_uptime_telefono() if en_termux else None
+        memoria = _leer_memoria()
+        disco = _leer_disco()
+        uptime_tel = _leer_uptime_telefono()
         latencia = self.bot.latency
         return {
             'bateria': bateria,

@@ -163,6 +163,14 @@ class Errores(commands.Cog):
             self._admin_cache = app.team.owner_id if app.team else app.owner.id
         return self._admin_cache
 
+    @app_commands.command(name='probar_error', description='Lanza una excepción de prueba (solo admin)')
+    async def probar_error(self, interaction: discord.Interaction):
+        if interaction.user.id != await self.admin_id():
+            return await interaction.response.send_message(
+                "❌ Solo el admin puede usar este comando.", ephemeral=True
+            )
+        raise RuntimeError('Error de prueba intencional desde /probar_error')
+
     @staticmethod
     def _marcar_manejado(error: Exception):
         try:
@@ -191,7 +199,7 @@ class Errores(commands.Cog):
     @staticmethod
     def _texto_esperado(error: Exception) -> str | None:
         if isinstance(error, commands.CommandNotFound):
-            return "❌ Comando no encontrado. Usá `!help` para ver la lista."
+            return "❌ Comando no encontrado. Usa `!help` para ver la lista."
         if isinstance(error, (commands.CommandOnCooldown, app_commands.CommandOnCooldown)):
             return f"⏳ Espera {error.retry_after:.0f}s antes de volver a usarlo."
         if isinstance(error, (commands.MissingRequiredArgument, app_commands.TransformerError)):

@@ -1,6 +1,28 @@
+import sys
 import unittest
 
-from cogs.servidor import GestorAlertas
+from cogs.servidor import GestorAlertas, _leer_disco, _leer_memoria, _leer_uptime_telefono
+
+
+class LecturaSistemaTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith(('linux', 'android')), 'requiere Linux/Android')
+    def test_lee_uptime(self):
+        uptime = _leer_uptime_telefono()
+        self.assertIsNotNone(uptime)
+        self.assertGreater(uptime, 0)
+
+    @unittest.skipUnless(sys.platform.startswith(('linux', 'android')), 'requiere Linux/Android')
+    def test_lee_memoria(self):
+        memoria = _leer_memoria()
+        self.assertIsNotNone(memoria)
+        self.assertGreater(memoria['total'], 0)
+        self.assertGreaterEqual(memoria['disponible'], 0)
+
+    def test_lee_disco(self):
+        disco = _leer_disco()
+        self.assertIsNotNone(disco)
+        self.assertGreater(disco['total'], 0)
+        self.assertGreaterEqual(disco['libre'], 0)
 
 
 class AlertasTests(unittest.TestCase):

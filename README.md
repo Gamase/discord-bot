@@ -115,7 +115,7 @@ Cada botón muestra un mensaje efímero confirmando la acción realizada.
 | `/servidor` | Batería, carga, temperatura, uptime del teléfono y del bot, almacenamiento, RAM y latencia |
 | `/umbrales` | Cambia los umbrales de alerta (`bateria_min`, `bateria_rearme`, `temp_max`, `temp_rearme`) |
 
-`/servidor` está pensado para el Huawei P30 con Termux y `termux-api`. Si el bot corre en Windows o `termux-battery-status` falla, el comando y el cog siguen funcionando y muestran `no disponible` en los campos del teléfono.
+`/servidor` está pensado para el Huawei P30 con Termux y `termux-api`. El uptime, la RAM y el almacenamiento se leen de `/proc` y del disco en cualquier sistema. Solo la batería depende de Termux:API: si falta el paquete `termux-api` o `termux-battery-status` falla, esos campos muestran `no disponible` y la causa se registra una sola vez en `bot.log`. En Termux hay que instalar tanto la app Termux:API como el paquete `termux-api`.
 
 El loop de monitoreo revisa cada 5 minutos. Avisa una sola vez por transición:
 
@@ -129,6 +129,8 @@ Los umbrales se guardan en la tabla `settings` (`servidor_bateria_min`, `servido
 El cog de errores maneja comandos de prefijo, slash commands, eventos y tareas. Los errores esperados (comando inexistente, cooldown, permisos, argumentos) solo se le muestran al usuario. Los inesperados se envían al admin por DM con usuario, canal, hora de Tijuana y traceback censurado; si es muy largo, va como archivo `.txt`. Si el DM falla, usa el canal de respaldo.
 
 Los errores repetidos se agrupan con anti-spam: el primero avisa y las repeticiones se cuentan durante 10 minutos. Al cerrar la ventana se envía un resumen con el total, aunque no haya un error nuevo.
+
+`/probar_error` (solo admin) lanza una excepción intencional para verificar el flujo completo de reporte.
 
 ## DJ permissions
 
