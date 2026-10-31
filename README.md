@@ -7,7 +7,7 @@ Bot de Discord multifuncional con reproducción de música de YouTube, panel de 
 - **Music** — Reproducción de YouTube con menú de búsqueda, gestión de cola, modos de loop, autoplay por radio y panel en vivo con botones.
 - **Playlists & history** — Guarda/carga playlists desde el panel de botones y mantiene las últimas 50 canciones reproducidas por servidor (SQLite).
 - **DJ permissions** — Restringe los controles de reproducción a admins, un rol DJ o miembros en el canal de voz del bot.
-- **Voice (TTS)** — Lee texto en voz alta usando Edge TTS (voz es-MX) con fallback a eSpeak.
+- **Voice (TTS)** — Lee texto en voz alta usando Edge TTS con dos voces es-MX configurables y fallback a eSpeak.
 - **Pagos** — Control de pagos mensuales con SQLite: recordatorio mensual con botón «Ya pagué», confirmación del admin y seguimiento cada 3 días a quienes faltan.
 - **Reminders** — Recordatorios flexibles por usuario (`!recordar 10m ...`).
 - **AI** — Chat con Groq (modelo configurable) con historial de conversación por usuario y cooldown de 3 usos/60s.
@@ -67,7 +67,8 @@ Cada botón muestra un mensaje efímero confirmando la acción realizada.
 ### Voice (TTS)
 | Comando | Descripción |
 |---------|-------------|
-| `!h <texto>` | Lee el texto en voz alta en el canal de voz |
+| `!h <texto>` | Lee el texto con la voz principal (`TTS_VOICE`) |
+| `!h2 <texto>` | Lee el texto con la voz secundaria (`TTS_VOICE_2`) |
 
 ### Reminders
 | Comando | Alias | Descripción |
@@ -130,8 +131,6 @@ El cog de errores maneja comandos de prefijo, slash commands, eventos y tareas. 
 
 Los errores repetidos se agrupan con anti-spam: el primero avisa y las repeticiones se cuentan durante 10 minutos. Al cerrar la ventana se envía un resumen con el total, aunque no haya un error nuevo.
 
-`/probar_error` (solo admin) lanza una excepción intencional para verificar el flujo completo de reporte.
-
 ## DJ permissions
 
 Los controles de reproducción (`pause`, `resume`, `skip`, `stop`, `loop`, `remove`, `move`, `clear`, `shuffle`, `autoplay` y botones del panel) están disponibles para:
@@ -184,6 +183,7 @@ PAGOS_CANAL_ID=canal_respaldo_para_solicitudes
 GROQ_API_KEY=your_groq_api_key
 GROQ_MODEL=openai/gpt-oss-120b
 TTS_VOICE=es-MX-DaliaNeural
+TTS_VOICE_2=es-MX-JorgeNeural
 WATCHDOG_TIMEOUT=120
 ```
 
@@ -202,7 +202,8 @@ WATCHDOG_TIMEOUT=120
 | `PAGOS_CANAL_ID` | Canal de respaldo para solicitudes si el DM al admin falla (por defecto `AVISO_CANAL_ID`) |
 | `GROQ_API_KEY` | API key de Groq ([console.groq.com](https://console.groq.com)) |
 | `GROQ_MODEL` | Modelo de Groq (por defecto `openai/gpt-oss-120b`) |
-| `TTS_VOICE` | Voz de Edge TTS (por defecto `es-MX-DaliaNeural`) |
+| `TTS_VOICE` | Voz principal de Edge TTS para `!h` (por defecto `es-MX-DaliaNeural`) |
+| `TTS_VOICE_2` | Voz secundaria de Edge TTS para `!h2` (por defecto `es-MX-JorgeNeural`) |
 | `WATCHDOG_TIMEOUT` | Segundos sin heartbeat antes de reiniciar (por defecto `120`) |
 
 ### 4. Instalar FFmpeg

@@ -8,6 +8,7 @@ import pyttsx3
 from discord.ext import commands
 
 VOICE = os.getenv('TTS_VOICE', 'es-MX-DaliaNeural')
+VOICE_2 = os.getenv('TTS_VOICE_2', 'es-MX-JorgeNeural')
 
 VOICE_NAMES = (
     'Microsoft Sabina Desktop',
@@ -16,12 +17,12 @@ VOICE_NAMES = (
 )
 
 
-async def _tts_edge(texto: str) -> str:
+async def _tts_edge(texto: str, voz: str = VOICE) -> str:
     """Genera un MP3 temporal con Edge TTS (voz neuronal)."""
     tmp = tempfile.NamedTemporaryFile(suffix='.mp3', delete=False)
     tmp.close()
     try:
-        await edge_tts.Communicate(texto, VOICE).save(tmp.name)
+        await edge_tts.Communicate(texto, voz).save(tmp.name)
         if os.path.getsize(tmp.name) == 0:
             raise RuntimeError('Edge TTS devolvió un archivo vacío')
         return tmp.name
@@ -58,6 +59,14 @@ class Voz(commands.Cog):
     @commands.command(name='h')
     async def hablar(self, ctx: commands.Context, *, texto: str):
         """Lee un texto en el canal de voz con voz en español. Uso: !h [texto]"""
+        await self._decir(ctx, texto, VOICE)
+
+    @commands.command(name='h2')
+    async def hablar2(self, ctx: commands.Context, *, texto: str):
+        """Lee un texto con la segunda voz configurada. Uso: !h2 [texto]"""
+        await self._decir(ctx, texto, VOICE_2)
+
+    async def _decir(self, ctx: commands.Context, texto: str, voz: str):
         if not ctx.author.voice:
             return await ctx.send("❌ Debes estar en un canal de voz.")
 
@@ -73,7 +82,7 @@ class Voz(commands.Cog):
 
         try:
             try:
-                tmp_path = await _tts_edge(texto)
+                tmp_path = await _tts_edge(texto, voz)
             except Exception as e:
                 print(f'⚠️ Edge TTS falló ({e}); usando eSpeak de respaldo')
                 loop = asyncio.get_event_loop()
