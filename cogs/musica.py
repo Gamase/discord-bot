@@ -744,6 +744,30 @@ class Musica(commands.Cog):
             self._record_history(ctx.guild.id, source)
             await self._start_panel(ctx.guild.id)
 
+    async def _play_now(self, ctx: commands.Context, url: str):
+        vc = ctx.guild.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()) and not self._puede_controlar(ctx):
+            return await ctx.send("❌ Solo el DJ (rol o canal de voz) puede interrumpir la canción actual.")
+        if self._es_playlist(url):
+            return await ctx.send("❌ `!play now` acepta una sola canción, no playlists.")
+
+        async with ctx.typing():
+            try:
+                source = await YTDLSource.from_url(url, loop=self.bot.loop)
+            except Exception as e:
+                return await ctx.send(f"❌ Error al obtener el audio: {e}")
+
+        # Se revisa de nuevo: la canción pudo terminar mientras se extraía el audio.
+        if not (vc.is_playing() or vc.is_paused()):
+            return await self._encolar_o_reproducir(ctx, source)
+
+        source.user_id = ctx.author.id
+        state = self._state(ctx.guild.id)
+        state.queue.appendleft(source)
+        state.skip_next = True
+        vc.stop()
+        await ctx.send(f"⏩ Reproduciendo ahora: **{source.title}** (la cola se mantiene)")
+
     async def _reproducir_resultado(self, ctx: commands.Context, res: dict):
         url = res.get('url') or res.get('webpage_url') or res.get('id')
         try:
@@ -1056,7 +1080,7 @@ class Musica(commands.Cog):
 
     @commands.command(name='play', aliases=['p', 'reproducir'])
     async def play(self, ctx: commands.Context, *, query: str):
-        """Reproduce música. Acepta URL, playlist de YouTube/YT Music o búsqueda."""
+        """Reproduce música (URL, playlist o búsqueda). `!play now <link>` la pone de inmediato."""
         if not ctx.author.voice:
             return await ctx.send("❌ Debes estar en un canal de voz.")
         vc = ctx.guild.voice_client
@@ -1066,6 +1090,10 @@ class Musica(commands.Cog):
         state.channel = ctx.channel
         if vc.channel:
             state.voice_channel_id = vc.channel.id
+        partes = query.split(maxsplit=1)
+        # Solo con link: así "!play now and then" sigue siendo una búsqueda normal.
+        if len(partes) == 2 and partes[0].lower() == 'now' and self._es_url(partes[1]):
+            return await self._play_now(ctx, partes[1].strip())
         if self._es_url(query):
             if self._es_playlist(query):
                 return await self._cargar_playlist_url(ctx, query)

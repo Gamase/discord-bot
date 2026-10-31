@@ -8,7 +8,8 @@ Bot de Discord multifuncional con reproducción de música de YouTube, panel de 
 - **Playlists & history** — Guarda/carga playlists desde el panel de botones y mantiene las últimas 50 canciones reproducidas por servidor (SQLite).
 - **DJ permissions** — Restringe los controles de reproducción a admins, un rol DJ o miembros en el canal de voz del bot.
 - **Voice (TTS)** — Lee texto en voz alta usando Edge TTS (voz es-MX) con fallback a eSpeak.
-- **Reminders** — Recordatorio mensual de pago automático y recordatorios flexibles por usuario (`!recordar 10m ...`).
+- **Pagos** — Control de pagos mensuales con SQLite: recordatorio mensual con botón «Ya pagué», confirmación del admin y seguimiento cada 3 días a quienes faltan.
+- **Reminders** — Recordatorios flexibles por usuario (`!recordar 10m ...`).
 - **AI** — Chat con Groq (modelo configurable) con historial de conversación por usuario y cooldown de 3 usos/60s.
 - **Stability** — Reconexión automática de voz, heartbeat + watchdog, alertas de inicio/caída.
 
@@ -41,6 +42,7 @@ Cada botón muestra un mensaje efímero confirmando la acción realizada.
 |---------|-------|-------------|
 | `!join` | `!conectar` | Conecta el bot a tu canal de voz |
 | `!play <búsqueda/URL>` | `!p`, `!reproducir` | Busca (menú de 5 resultados), reproduce una URL o carga una playlist de YouTube/YT Music (hasta 100 pistas) |
+| `!play now <link>` | `!p now` | Reproduce la canción de inmediato, interrumpiendo la actual; la cola se mantiene |
 | `!pause` | `!pausar` | Pausa la reproducción |
 | `!resume` | `!reanudar` | Reanuda la reproducción |
 | `!skip` | `!s`, `!saltar` | Salta a la siguiente canción |
@@ -71,9 +73,26 @@ Cada botón muestra un mensaje efímero confirmando la acción realizada.
 | `!recordar <tiempo> <texto>` | `!recuerdame` | Crea un recordatorio (ej. `10m`, `2h`, `1d`) |
 | `!recordatorios` | `!misrecordatorios` | Lista tus recordatorios pendientes |
 | `!olvidar <id>` | `!borrarrecordatorio` | Elimina un recordatorio |
-| `!forzar_recordatorio` | — | Envía el recordatorio mensual manualmente (solo dueño del bot) |
-| `!estado_recordatorio` | — | Muestra el estado del recordatorio automático |
 | `!prueba` | — | Verifica que el bot funciona |
+
+### Pagos (slash commands)
+| Comando | Quién | Descripción |
+|---------|-------|-------------|
+| `/estado [mes]` | Todos | Quién pagó, quién está en revisión y quién falta (mes `AAAA-MM`, por defecto el actual) |
+| `/historial [usuario]` | Todos | Resumen de los últimos 6 meses, general o de una persona |
+| `/precio <monto>` | Admin | Cambia el precio por persona (aplica a solicitudes nuevas) |
+| `/agregar <usuario>` | Admin | Agrega a alguien a la lista de pagos |
+| `/quitar <usuario>` | Admin | Quita a alguien de la lista (su historial se conserva) |
+| `/marcar_pagado <usuario> [mes]` | Admin | Marca un pago como confirmado sin pasar por la solicitud |
+| `/recordatorio` | Admin | Envía ya el recordatorio del mes actual a quienes faltan |
+
+**Cómo funciona:**
+- El día configurado (`dia_recordatorio`, 9:00 hora de Tijuana) se envía el recordatorio mensual al canal `CANAL_ID`, mencionando solo a quienes no han pagado. Queda registrado en la DB, así que no se repite ese mes aunque el bot se reinicie. Si el bot estaba apagado ese día, lo envía en cuanto vuelve.
+- La primera vez que arranca, el bot guarda `mes_inicio` en la DB: si el día de recordatorio de este mes ya pasó, empieza a cobrar el mes siguiente; si no, el actual. Los meses anteriores se ignoran.
+- Cada 3 días se vuelve a mencionar solo a quienes siguen sin pagar.
+- El botón **Ya pagué** crea una solicitud pendiente y le llega al admin por DM (o al canal `PAGOS_CANAL_ID` si el DM falla) con botones **Confirmar** / **Rechazar**. Solo cuenta como pagado al confirmar; un rechazo queda registrado y la persona puede volver a solicitar.
+- Todos los botones siguen funcionando después de reiniciar el bot.
+- El admin nunca cuenta como deudor. La lista de miembros se siembra desde `AMIGOS_IDS` solo la primera vez; después se administra con `/agregar` y `/quitar`.
 
 ### AI
 | Comando | Descripción |
@@ -133,6 +152,9 @@ PRECIO=60
 DIA_RECORDATORIO=6
 AMIGOS_IDS=id1,id2,id3
 CLABE=tu_clabe
+ADMIN_ID=tu_discord_id
+GUILD_ID=id_del_servidor
+PAGOS_CANAL_ID=canal_respaldo_para_solicitudes
 GROQ_API_KEY=your_groq_api_key
 GROQ_MODEL=openai/gpt-oss-120b
 TTS_VOICE=es-MX-DaliaNeural
@@ -145,10 +167,13 @@ WATCHDOG_TIMEOUT=120
 | `CANAL_ID` | Canal para recordatorios automáticos |
 | `AVISO_CANAL_ID` | Canal para alertas de inicio/caída (por defecto igual a `CANAL_ID`) |
 | `DJ_ROLE_ID` | Rol que puede controlar la reproducción (`0` deshabilitado) |
-| `PRECIO` | Precio por persona para YouTube Premium |
-| `DIA_RECORDATORIO` | Día del mes para el recordatorio (1–31) |
-| `AMIGOS_IDS` | IDs de usuario separados por coma para mencionar |
+| `PRECIO` | Precio inicial por persona (después se cambia con `/precio`) |
+| `DIA_RECORDATORIO` | Día del mes para el recordatorio (1–31; valor inicial guardado en la DB) |
+| `AMIGOS_IDS` | IDs que se usan para sembrar la lista de pagos la primera vez |
 | `CLABE` | CLABE interbancaria para el recordatorio de pago |
+| `ADMIN_ID` | Quien confirma pagos y usa los comandos de admin (por defecto, el dueño de la app del bot) |
+| `GUILD_ID` | Servidor donde se sincronizan los slash commands (por defecto, el servidor de `CANAL_ID`) |
+| `PAGOS_CANAL_ID` | Canal de respaldo para solicitudes si el DM al admin falla (por defecto `AVISO_CANAL_ID`) |
 | `GROQ_API_KEY` | API key de Groq ([console.groq.com](https://console.groq.com)) |
 | `GROQ_MODEL` | Modelo de Groq (por defecto `openai/gpt-oss-120b`) |
 | `TTS_VOICE` | Voz de Edge TTS (por defecto `es-MX-DaliaNeural`) |
@@ -170,12 +195,6 @@ brew install ffmpeg
 
 ### 5. Iniciar el bot
 
-**Windows** (doble clic):
-- `start_bot.vbs` — Inicia el bot en segundo plano
-- `restart_bot.vbs` — Detiene y reinicia el bot
-- `stop_bot.vbs` — Detiene el bot
-
-**Línea de comandos:**
 ```bash
 python main.py
 ```
@@ -183,7 +202,7 @@ python main.py
 ## Operations
 
 - `main.py` escribe `heartbeat` cada 30 segundos.
-- `db.py` almacena playlists, historial y recordatorios en `bot.db` (SQLite).
+- `db.py` almacena playlists, historial, recordatorios y pagos en `bot.db` (SQLite, no se sube a git).
 
 ## Project Structure
 
@@ -191,29 +210,29 @@ python main.py
 discord-bot/
 ├── main.py              # Entry point, cog loader, heartbeat y alertas
 ├── config.py            # Lector de variables de entorno
-├── db.py                # Helpers SQLite (playlists, historial, recordatorios)
+├── db.py                # Helpers SQLite (playlists, historial, recordatorios, pagos)
 ├── requirements.txt     # Dependencias principales
-├── start_bot.vbs        # Inicia el bot en segundo plano (Windows)
-├── restart_bot.vbs      # Reinicia el bot (Windows)
-├── stop_bot.vbs         # Detiene el bot (Windows)
 ├── .env                 # Variables de entorno (no trackeado por git)
 └── cogs/
     ├── general.py       # Help, ping, uptime y stats
     ├── musica.py        # Reproducción YouTube, cola, panel con botones y playlists
     ├── voz.py           # TTS con Edge TTS / eSpeak
-    ├── recordatorio.py  # Recordatorios mensuales y por usuario
+    ├── recordatorio.py  # Recordatorios por usuario
+    ├── pagos.py         # Control de pagos mensuales, botones persistentes y slash commands
     └── ia.py            # Chat IA con Groq
 ```
 
 ## Dependencies
 
 ```
-discord.py>=2.3.0
+discord.py>=2.4.0
 yt-dlp>=2024.1.0
 pyttsx3>=2.90
 python-dotenv>=1.0.0
 PyNaCl>=1.5.0
 groq>=0.9.0
+davey>=0.1.7
 edge-tts>=7.3.1
 aiohttp>=3.9.0
+tzdata>=2024.1
 ```

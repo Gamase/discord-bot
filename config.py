@@ -13,5 +13,9 @@ class Config:
 
     CLABE: str = os.getenv('CLABE', '')
 
+    ADMIN_ID: int = int(os.getenv('ADMIN_ID') or 0)
+    GUILD_ID: int = int(os.getenv('GUILD_ID') or 0)
+    PAGOS_CANAL_ID: int = int(os.getenv('PAGOS_CANAL_ID') or AVISO_CANAL_ID or CANAL_ID)
+
     _raw = os.getenv('AMIGOS_IDS', '')
-    AMIGOS: list[str] = [f"<@{uid.strip()}>" for uid in _raw.split(',') if uid.strip()]
+    AMIGOS_IDS: list[int] = [int(uid) for uid in _raw.split(',') if uid.strip().isdigit()]

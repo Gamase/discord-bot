@@ -38,9 +38,40 @@ def init_db():
                 message TEXT NOT NULL,
                 remind_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS members (
+                discord_id INTEGER PRIMARY KEY,
+                added_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                discord_id INTEGER NOT NULL,
+                month TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'confirmed', 'rejected')),
+                requested_at INTEGER NOT NULL,
+                resolved_at INTEGER,
+                resolved_by INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS reminder_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                month TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('monthly', 'followup')),
+                sent_at INTEGER NOT NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_playlists ON playlists(guild_id, name, position);
             CREATE INDEX IF NOT EXISTS idx_history ON history(guild_id, played_at);
             CREATE INDEX IF NOT EXISTS idx_reminders ON reminders(remind_at);
+            CREATE INDEX IF NOT EXISTS idx_payments_month ON payments(month, discord_id);
+            -- Un solo pago activo (pendiente o confirmado) por persona y mes.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_activo
+                ON payments(discord_id, month) WHERE status IN ('pending', 'confirmed');
+            -- Un solo recordatorio mensual por mes, aunque el bot se reinicie.
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reminder_mensual
+                ON reminder_log(month) WHERE kind = 'monthly';
             """
         )
 
@@ -171,3 +202,166 @@ def playlist_clear_all(guild_id: int) -> int:
     with _con() as con:
         cur = con.execute("DELETE FROM playlists WHERE guild_id = ?", (guild_id,))
         return cur.rowcount
+
+
+def settings_seed(defaults: dict[str, str]):
+    with _con() as con:
+        con.executemany(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", defaults.items()
+        )
+
+
+def setting_get(key: str) -> str | None:
+    with _con() as con:
+        fila = con.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return fila["value"] if fila else None
+
+
+def setting_set(key: str, value: str):
+    with _con() as con:
+        con.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+
+def members_count() -> int:
+    with _con() as con:
+        return con.execute("SELECT COUNT(*) FROM members").fetchone()[0]
+
+
+def member_ids() -> list[int]:
+    with _con() as con:
+        return [f["discord_id"] for f in con.execute("SELECT discord_id FROM members ORDER BY added_at")]
+
+
+def member_exists(discord_id: int) -> bool:
+    with _con() as con:
+        return con.execute("SELECT 1 FROM members WHERE discord_id = ?", (discord_id,)).fetchone() is not None
+
+
+def member_add(discord_id: int) -> bool:
+    with _con() as con:
+        cur = con.execute(
+            "INSERT OR IGNORE INTO members (discord_id, added_at) VALUES (?, ?)",
+            (discord_id, int(time.time())),
+        )
+        return cur.rowcount > 0
+
+
+def member_remove(discord_id: int) -> bool:
+    with _con() as con:
+        return con.execute("DELETE FROM members WHERE discord_id = ?", (discord_id,)).rowcount > 0
+
+
+def payment_get(payment_id: int):
+    with _con() as con:
+        return con.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
+
+
+def payment_get_active(discord_id: int, month: str):
+    with _con() as con:
+        return con.execute(
+            "SELECT * FROM payments WHERE discord_id = ? AND month = ? "
+            "AND status IN ('pending', 'confirmed')",
+            (discord_id, month),
+        ).fetchone()
+
+
+def payment_request(discord_id: int, month: str, amount: int) -> int | None:
+    """Crea una solicitud pendiente. Devuelve None si ya hay una activa ese mes."""
+    try:
+        with _con() as con:
+            return con.execute(
+                "INSERT INTO payments (discord_id, month, amount, status, requested_at) "
+                "VALUES (?, ?, ?, 'pending', ?)",
+                (discord_id, month, amount, int(time.time())),
+            ).lastrowid
+    except sqlite3.IntegrityError:
+        return None
+
+
+def payment_resolve(payment_id: int, status: str, admin_id: int):
+    """Resuelve una solicitud pendiente. Devuelve None si ya estaba resuelta."""
+    with _con() as con:
+        cur = con.execute(
+            "UPDATE payments SET status = ?, resolved_at = ?, resolved_by = ? "
+            "WHERE id = ? AND status = 'pending'",
+            (status, int(time.time()), admin_id, payment_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        return con.execute("SELECT * FROM payments WHERE id = ?", (payment_id,)).fetchone()
+
+
+def payment_mark_paid(discord_id: int, month: str, amount: int, admin_id: int):
+    """Confirma el pago del mes. Devuelve None si ya estaba confirmado."""
+    ahora = int(time.time())
+    with _con() as con:
+        fila = con.execute(
+            "SELECT id, status FROM payments WHERE discord_id = ? AND month = ? "
+            "AND status IN ('pending', 'confirmed')",
+            (discord_id, month),
+        ).fetchone()
+        if fila and fila["status"] == "confirmed":
+            return None
+        if fila:
+            pid = fila["id"]
+            con.execute(
+                "UPDATE payments SET status = 'confirmed', resolved_at = ?, resolved_by = ? WHERE id = ?",
+                (ahora, admin_id, pid),
+            )
+        else:
+            pid = con.execute(
+                "INSERT INTO payments (discord_id, month, amount, status, requested_at, resolved_at, resolved_by) "
+                "VALUES (?, ?, ?, 'confirmed', ?, ?, ?)",
+                (discord_id, month, amount, ahora, ahora, admin_id),
+            ).lastrowid
+        return con.execute("SELECT * FROM payments WHERE id = ?", (pid,)).fetchone()
+
+
+def payments_month(month: str):
+    with _con() as con:
+        return con.execute(
+            "SELECT discord_id, status, amount FROM payments WHERE month = ?", (month,)
+        ).fetchall()
+
+
+def payments_user(discord_id: int):
+    with _con() as con:
+        return con.execute(
+            "SELECT month, status, amount FROM payments WHERE discord_id = ? ORDER BY month DESC",
+            (discord_id,),
+        ).fetchall()
+
+
+def reminder_claim(month: str, kind: str) -> int | None:
+    """Registra un envío. Devuelve None si el mensual de ese mes ya existe."""
+    try:
+        with _con() as con:
+            return con.execute(
+                "INSERT INTO reminder_log (month, kind, sent_at) VALUES (?, ?, ?)",
+                (month, kind, int(time.time())),
+            ).lastrowid
+    except sqlite3.IntegrityError:
+        return None
+
+
+def reminder_unclaim(log_id: int):
+    with _con() as con:
+        con.execute("DELETE FROM reminder_log WHERE id = ?", (log_id,))
+
+
+def reminder_sent_monthly(month: str) -> bool:
+    with _con() as con:
+        return con.execute(
+            "SELECT 1 FROM reminder_log WHERE month = ? AND kind = 'monthly'", (month,)
+        ).fetchone() is not None
+
+
+def reminder_last(month: str) -> int | None:
+    with _con() as con:
+        return con.execute(
+            "SELECT MAX(sent_at) FROM reminder_log WHERE month = ?", (month,)
+        ).fetchone()[0]

@@ -24,7 +24,7 @@ bot = commands.Bot(
 )
 bot.remove_command('help')
 
-COGS = ['cogs.general', 'cogs.recordatorio', 'cogs.musica', 'cogs.voz', 'cogs.ia']
+COGS = ['cogs.general', 'cogs.recordatorio', 'cogs.musica', 'cogs.voz', 'cogs.ia', 'cogs.pagos']
 
 HEARTBEAT = Path(__file__).resolve().parent / 'heartbeat'
 _anunciado = False
@@ -67,18 +67,38 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
         traceback.print_exception(type(error), error, error.__traceback__)
 
 
+async def sincronizar_comandos():
+    guild_id = Config.GUILD_ID
+    if not guild_id:
+        canal = bot.get_channel(Config.CANAL_ID)
+        guild_id = canal.guild.id if getattr(canal, 'guild', None) else 0
+
+    if not guild_id:
+        synced = await bot.tree.sync()
+        print(f'🔄 {len(synced)} slash commands sincronizados (global, pueden tardar en aparecer)')
+        return
+
+    # Sync por servidor = aparecen al instante. Luego se vacían los globales
+    # para no ver cada comando duplicado.
+    guild = discord.Object(id=guild_id)
+    bot.tree.copy_global_to(guild=guild)
+    synced = await bot.tree.sync(guild=guild)
+    bot.tree.clear_commands(guild=None)
+    await bot.tree.sync()
+    print(f'🔄 {len(synced)} slash commands sincronizados al servidor {guild_id}')
+
+
 @bot.event
 async def on_ready():
     global _anunciado
     print(f'✅ Bot conectado como {bot.user}')
-    try:
-        synced = await bot.tree.sync()
-        print(f'🔄 {len(synced)} slash commands sincronizados')
-    except Exception as e:
-        print(f'❌ Error sincronizando slash commands: {e}')
 
     if not _anunciado:
         _anunciado = True
+        try:
+            await sincronizar_comandos()
+        except Exception as e:
+            print(f'❌ Error sincronizando slash commands: {e}')
         await avisar_en_linea()
 
 
